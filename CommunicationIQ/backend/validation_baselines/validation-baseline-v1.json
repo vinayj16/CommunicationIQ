@@ -1,0 +1,32 @@
+{
+  "name": "validation-baseline-v1",
+  "engine_hash": "45d0e3c4471d3d15",
+  "created_at": "2026-08-17T19:31:52.190002+00:00",
+  "files": {
+    "app/engine/audio.py": "b37b4a4dbffe5dab",
+    "app/engine/pipeline.py": "1c44243fd8f53571",
+    "app/engine/calibration.py": "2b2b80089982f7b4",
+    "app/engine/registry.py": "7c522d3b39900379",
+    "app/engine/contracts/types.py": "d0c512ba8b4429d2",
+    "app/engine/contracts/speech.py": "4d70c9a369e94db1",
+    "app/engine/contracts/language.py": "9b37096781e7603b",
+    "app/engine/providers/tier0/vad.py": "024f422db54b4d67",
+    "app/engine/providers/tier0/fluency.py": "c7619e5e8ed1d6ad",
+    "app/engine/providers/tier1/model.py": "81e789ee1c9bfd47",
+    "app/engine/providers/tier1/asr.py": "baa17b3438142e18",
+    "app/engine/providers/tier1/vad.py": "6b8c1dc3038eb2dd",
+    "app/engine/providers/tier1/accuracy.py": "e8871ce9495d2005",
+    "app/engine/providers/tier1/disfluency.py": "a2b2e77124894210",
+    "app/engine/providers/tier1/grammar.py": "ecf5879265c27e59",
+    "app/engine/providers/tier1/relevance.py": "3053257604bcc3c8",
+    "app/engine/providers/tier1/pronunciation.py": "6d5d54f1a00f022a",
+    "app/engine/psychometrics/bkt.py": "0b50617f0e9b1f6c",
+    "app/readiness.py": "3d5ea4d775db95ae"
+  },
+  "models": {
+    "asr": "small.en",
+    "asr_compute": "int8",
+    "pronunciation": "facebook/wav2vec2-base-960h"
+  },
+  "note": "frozen for validation data collection"
+}
