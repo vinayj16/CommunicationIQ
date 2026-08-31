@@ -205,9 +205,8 @@ function Result() {
             <div className="mt-2"><Badge tone="var(--primary)">{data.band}</Badge></div>
           )}
           {/* An uncalibrated composite shown in the product's brand colour,
-              on a 20-80 scale that looks like a vendor band, is how somebody
-              ends up quoting it to a recruiter. Greyed, badged, and explained
-              until a validation study says otherwise. */}
+              on a 0-100 scale. Greyed, badged, and explained until a
+              validation study says otherwise. */}
           <p className="text-[11px] text-muted mt-3 leading-relaxed">
             {data.calibration_note || (
               `Built from the ${data.overall_basis.length} measures below. Not a ` +
@@ -1266,8 +1265,8 @@ function Scoreboard({ dimensions, scaleMin, scaleMax }: {
       {/* Scale Legend */}
       <div className="flex items-center justify-center gap-4 mt-2">
         <div className="flex items-center gap-1"><div className="w-3 h-3 rounded" style={{ background: "var(--rag-red)" }} /><span className="text-[10px] text-muted">0-49 Needs work</span></div>
-        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded" style={{ background: "var(--rag-amber)" }} /><span className="text-[10px] text-muted">50-69 Good</span></div>
-        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded" style={{ background: "var(--rag-green)" }} /><span className="text-[10px] text-muted">70-100 Excellent</span></div>
+        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded" style={{ background: "var(--rag-amber)" }} /><span className="text-[10px] text-muted">50-74 Competent</span></div>
+        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded" style={{ background: "var(--rag-green)" }} /><span className="text-[10px] text-muted">75-100 Strong</span></div>
       </div>
     </Section>
   );

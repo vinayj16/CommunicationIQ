@@ -52,14 +52,19 @@ def _skill_for(category: str) -> str:
 @router.get("/quiz/next", response_model=list[QuizItemOut])
 async def next_quiz(principal: Principal, models: TenantModels,
                     count: int = DEFAULT_QUIZ_LENGTH,
-                    category: str | None = None) -> list[QuizItemOut]:
+                    category: str | None = None,
+                    company: str | None = None,
+                    difficulty: str | None = None) -> list[QuizItemOut]:
     """A quiz session, weighted toward the student's weakest area.
 
     The correct answer is deliberately not in this payload. It arrives with
     the result, after the answer has been given â€” a quiz whose key is in the
     network tab is not a measurement.
+
+    company filter: empty string = general questions only, company name = company questions only.
+    difficulty filter: easy (0-0.33), medium (0.34-0.66), hard (0.67-1.0)
     """
-    count = max(1, min(count, 25))
+    count = max(1, min(count, 200))
     weakest = await game.weakest_skills(models, principal.user_id, 2)
 
     # Practice shows all published quiz items so students always have content.
@@ -67,6 +72,17 @@ async def next_quiz(principal: Principal, models: TenantModels,
         models.QuizItem.status == "published")
     if category:
         query = query.find(models.QuizItem.category == category)
+    if company is not None:
+        if company == "":
+            query = query.find(models.QuizItem.company == "")
+        else:
+            query = query.find(models.QuizItem.company == company)
+    # Difficulty filter
+    if difficulty:
+        from beanie.operators import GTE, LTE as DiffLTE
+        diff_map = {"easy": (0.0, 0.33), "medium": (0.34, 0.66), "hard": (0.67, 1.0)}
+        lo, hi = diff_map.get(difficulty, (0.0, 1.0))
+        query = query.find(GTE(models.QuizItem.difficulty, lo), DiffLTE(models.QuizItem.difficulty, hi))
     pool = await query.to_list()
     if not pool:
         return []
@@ -96,9 +112,37 @@ async def next_quiz(principal: Principal, models: TenantModels,
             id=i.id, category=i.category, stem=i.stem, options=i.options,
             seconds_allowed=i.seconds_allowed,
             is_review=i.id in due_ids,
+            company=i.company or "",
+            difficulty=getattr(i, 'difficulty', 0.5) or 0.5,
         )
         for i in chosen
     ]
+
+
+@router.get("/companies", response_model=list[dict])
+async def list_companies_for_students(principal: Principal, models: TenantModels) -> list[dict]:
+    """List active companies with question counts — available to students."""
+    from app.models.tenant import Company, ReadingPassage, WritingPrompt, ListeningPassage, TaskItem
+    companies = await Company.find(Company.is_active == True).sort(Company.name).to_list()
+    result = []
+    for c in companies:
+        quiz_count = await models.QuizItem.find(models.QuizItem.company == c.name).count()
+        reading_count = await ReadingPassage.find(ReadingPassage.company == c.name).count()
+        writing_count = await WritingPrompt.find(WritingPrompt.company == c.name).count()
+        listening_count = await ListeningPassage.find(ListeningPassage.company == c.name).count()
+        speaking_count = await TaskItem.find(TaskItem.company == c.name).count()
+        total = quiz_count + reading_count + writing_count + listening_count + speaking_count
+        if total > 0:  # Only show companies that have questions
+            result.append({
+                "id": c.id, "name": c.name, "color": c.color,
+                "description": c.description,
+                "question_counts": {
+                    "quiz": quiz_count, "reading": reading_count,
+                    "writing": writing_count, "listening": listening_count,
+                    "speaking": speaking_count, "total": total,
+                },
+            })
+    return result
 
 
 @router.post("/quiz/submit", response_model=QuizResult)

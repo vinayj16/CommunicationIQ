@@ -54,7 +54,6 @@ export const NAV: NavSection[] = [
     items: [
       { href: "/tenant", label: "Overview", icon: Building2, roles: TENANT, tint: TINT.sky },
       { href: "/tenant/users", label: "People", icon: Users, roles: TENANT, tint: TINT.cyan },
-      { href: "/tenant/profiles", label: "Assessments", icon: Layers, roles: TENANT, tint: TINT.violet },
       { href: "/tenant/results", label: "Exam results", icon: Trophy, roles: TENANT, tint: TINT.rose },
       { href: "/tenant/reviews", label: "Reviews", icon: Star, roles: TENANT, tint: TINT.amber },
       { href: "/tenant/readiness", label: "Readiness", icon: BarChart3, roles: TENANT, tint: TINT.emerald },
@@ -66,6 +65,7 @@ export const NAV: NavSection[] = [
       { href: "/platform", label: "Overview", icon: Activity, roles: PLATFORM, tint: TINT.sky },
       { href: "/platform/tenants", label: "Institutions", icon: Building2, roles: PLATFORM, tint: TINT.cyan },
       { href: "/platform/content", label: "Question Bank", icon: BookOpen, roles: PLATFORM, tint: TINT.emerald },
+      { href: "/platform/companies", label: "Companies", icon: Building2, roles: PLATFORM, tint: TINT.indigo },
       { href: "/platform/results", label: "Exam results", icon: Trophy, roles: PLATFORM, tint: TINT.rose },
       { href: "/platform/reviews", label: "Reviews", icon: Star, roles: PLATFORM, tint: TINT.amber },
       { href: "/platform/audit", label: "Audit log", icon: ScrollText, roles: PLATFORM, tint: TINT.slate },
@@ -74,7 +74,7 @@ export const NAV: NavSection[] = [
   {
     title: "Account",
     items: [
-      { href: "/settings", label: "Settings", icon: Settings, roles: [...STUDENT, ...TENANT, ...PLATFORM], tint: TINT.slate },
+      { href: "/settings", label: "Settings", icon: Settings, roles: [...TENANT, ...PLATFORM], tint: TINT.slate },
     ],
   },
 ];

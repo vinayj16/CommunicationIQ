@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import {
   BookOpen, Mic, Headphones, PenLine, FileText, Plus, X, Trash2,
-  ChevronDown, ChevronRight, ChevronLeft, AlertTriangle, Upload, Volume2, Loader2, Play,
+  ChevronDown, ChevronRight, ChevronLeft, AlertTriangle, Upload, Volume2, Loader2, Play, Building2, Zap,
 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { useToast } from "@/components/Toast";
@@ -10,7 +10,9 @@ import { ErrorNote, PageHeader, Section, Skeleton } from "@/components/ui";
 import { PLATFORM_ROLES } from "@/lib/roles";
 import { API_BASE, getToken } from "@/lib/api";
 
-const COMPANIES = ["", "Accenture", "TCS", "Cognizant", "Wipro", "Infosys"];
+const DEFAULT_COMPANIES = ["", "Accenture", "TCS", "Cognizant", "Wipro", "Infosys", "HCL", "Tech Mahindra", "Capgemini"];
+// Module-level company list, updated dynamically from DB
+let _allCompanies: string[] = [...DEFAULT_COMPANIES];
 
 const CATEGORIES = [
   { key: "reading_comprehension", label: "Reading Comprehension" },
@@ -103,25 +105,50 @@ function QuestionBank() {
   const [promptAudioFiles, setPromptAudioFiles] = useState<any[]>([]);
   const [audioExpanded, setAudioExpanded] = useState(false);
   const [audioPage, setAudioPage] = useState(0);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [dbCompanies, setDbCompanies] = useState<{name: string; color: string}[]>([]);
   const AUDIO_PAGE_SIZE = 20;
+  // Merge hardcoded + DB companies
+  // Update module-level company list for child modals
+  const COMPANIES = Array.from(new Set(["", ...DEFAULT_COMPANIES.slice(1), ...dbCompanies.map((c: any) => c.name)]));
+  _allCompanies = COMPANIES;
 
   const loadData = () => {
     setLoading(true);
     const token = getToken();
+    // Also fetch companies from DB
+    fetch(`${API_BASE}/platform/companies`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(r => r.ok ? r.json() : []).then(c => {
+      setDbCompanies(c.filter((co: any) => co.is_active).map((co: any) => ({ name: co.name, color: co.color })));
+    }).catch(() => {});
     const params = new URLSearchParams();
-    if (companyFilter) params.set("company", companyFilter);
+    // Send empty string for general questions, or specific company for company filter
+    // The special __company__ value means "show all company questions"
+    if (companyFilter === "__company__") {
+      // Don't set company param - backend will return all, we filter client-side
+    } else if (companyFilter) {
+      params.set("company", companyFilter);
+    }
     fetch(`${API_BASE}/platform/questions?${params}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => { if (!r.ok) throw new Error("Failed to load"); return r.json(); })
       .then((d) => {
         setData(d);
+        // Filter based on company vs general view
+        const isCompanyView = companyFilter === "__company__";
+        const filterFn = (item: any) => {
+          if (isCompanyView) return item.company && item.company.length > 0;
+          if (companyFilter && companyFilter !== "__company__") return true; // specific company filter
+          return !item.company || item.company.length === 0; // general only
+        };
         const grouped: Record<string, any[]> = {
-          reading: (d.reading_passages || []).map((i: any) => ({ ...i, _source: "Reading", _collection: "reading" })),
-          listening: (d.listening_passages || []).map((i: any) => ({ ...i, _source: "Listening", _collection: "listening" })),
-          speaking: (d.task_items || []).map((i: any) => ({ ...i, _source: "Speaking", _collection: "task" })),
-          writing: (d.writing_prompts || []).map((i: any) => ({ ...i, _source: "Writing", _collection: "writing" })),
-          quiz: (d.quiz_items || []).map((i: any) => ({ ...i, _source: "Quiz", _collection: "quiz" })),
+          reading: (d.reading_passages || []).filter(filterFn).map((i: any) => ({ ...i, _source: "Reading", _collection: "reading" })),
+          listening: (d.listening_passages || []).filter(filterFn).map((i: any) => ({ ...i, _source: "Listening", _collection: "listening" })),
+          speaking: (d.task_items || []).filter(filterFn).map((i: any) => ({ ...i, _source: "Speaking", _collection: "task" })),
+          writing: (d.writing_prompts || []).filter(filterFn).map((i: any) => ({ ...i, _source: "Writing", _collection: "writing" })),
+          quiz: (d.quiz_items || []).filter(filterFn).map((i: any) => ({ ...i, _source: "Quiz", _collection: "quiz" })),
         };
         setItems(grouped);
         setLoading(false);
@@ -167,49 +194,170 @@ function QuestionBank() {
   if (error && !data) return <ErrorNote message={error} />;
 
   const counts = data?.counts || {};
-  const totalQuestions = (counts.quiz_items || 0) + (counts.task_items || 0) +
-    (counts.writing_prompts || 0) + (counts.listening_passages || 0) + (counts.reading_passages || 0);
+  // Compute counts based on current view (general or company)
+  const isCompanyView = companyFilter === "__company__";
+  const generalCounts = {
+    quiz_items: (items.quiz || []).filter((i: any) => !i.company).length,
+    task_items: (items.speaking || []).filter((i: any) => !i.company).length,
+    writing_prompts: (items.writing || []).filter((i: any) => !i.company).length,
+    listening_passages: (items.listening || []).filter((i: any) => !i.company).length,
+    reading_passages: (items.reading || []).filter((i: any) => !i.company).length,
+  };
+  const companyCounts = {
+    quiz_items: (items.quiz || []).filter((i: any) => i.company).length,
+    task_items: (items.speaking || []).filter((i: any) => i.company).length,
+    writing_prompts: (items.writing || []).filter((i: any) => i.company).length,
+    listening_passages: (items.listening || []).filter((i: any) => i.company).length,
+    reading_passages: (items.reading || []).filter((i: any) => i.company).length,
+  };
+  const activeCounts = isCompanyView ? companyCounts : generalCounts;
+  const totalQuestions = (activeCounts.quiz_items || 0) + (activeCounts.task_items || 0) +
+    (activeCounts.writing_prompts || 0) + (activeCounts.listening_passages || 0) + (activeCounts.reading_passages || 0);
 
   return (
     <>
-      <PageHeader title="Question Bank" sub="Manage questions for reading, writing, listening, speaking and grammar across all institutions." />
+      <PageHeader title="Question Bank" sub="Manage questions for reading, writing, listening, speaking and grammar. General questions are used for practice. Company questions are used only for company-specific exams." />
+
+      {/* Bulk Upload Button */}
+      <div className="mb-4 flex gap-2 flex-wrap">
+        <button onClick={() => setShowBulkUpload(true)}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition-colors"
+          style={{ background: "var(--brand-grad)", color: "white" }}>
+          <Upload size={14} />
+          Bulk Upload Questions
+        </button>
+        <button onClick={async () => {
+          try {
+            const resp = await fetch(`${API_BASE}/platform/questions/generate`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${getToken()}` },
+            });
+            const data = await resp.json();
+            if (data.ok) {
+              const total = Object.values(data.generated as Record<string, number>).reduce((a, b) => a + b, 0);
+              toast("success", `Generated ${total} questions`);
+              loadData();
+            } else {
+              toast("error", "Generation failed");
+            }
+          } catch { toast("error", "Could not generate questions"); }
+        }}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition-colors"
+          style={{ background: "var(--rag-green)", color: "white" }}>
+          <Zap size={14} />
+          Generate AI Questions
+        </button>
+        <a href="/platform/companies"
+          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition-colors no-underline"
+          style={{ background: "var(--surface-2)", color: "var(--text)" }}>
+          <Building2 size={14} />
+          Manage Companies
+        </a>
+      </div>
+
+      {/* General vs Company tabs */}
+      <div className="flex gap-2 mb-4">
+        <button onClick={() => setCompanyFilter("")}
+          className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${
+            companyFilter === "" ? "text-white" : "text-muted hover:text-text"
+          }`}
+          style={{ background: companyFilter === "" ? "var(--primary)" : "var(--surface-2)" }}>
+          General Questions (Practice)
+        </button>
+        <button onClick={() => setCompanyFilter("__company__")}
+          className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${
+            companyFilter === "__company__" ? "text-white" : "text-muted hover:text-text"
+          }`}
+          style={{ background: companyFilter === "__company__" ? "var(--secondary)" : "var(--surface-2)" }}>
+          Company Questions (Exams Only)
+        </button>
+      </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-        {SECTION_CONFIG.map((s) => {
-          const Icon = s.icon;
-          const countKey = s.key === "reading" ? "reading_passages" : s.key === "listening" ? "listening_passages" :
-            s.key === "speaking" ? "task_items" : s.key === "writing" ? "writing_prompts" : "quiz_items";
-          const count = counts[countKey] || 0;
-          return (
-            <div key={s.key} className="ds-card p-3 text-center cursor-pointer hover:bg-surface2 transition-colors"
-              onClick={() => { toggleSection(s.key); if (!expanded[s.key]) setTimeout(() => document.getElementById(`section-${s.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 100); }}>
-              <Icon size={18} style={{ color: s.color }} className="mx-auto mb-1" />
-              <div className="text-2xl font-bold" style={{ color: s.color }}>{count}</div>
-              <div className="text-[11px] text-muted">{s.label}</div>
-            </div>
-          );
-        })}
-      </div>
+      {isCompanyView ? (
+        /* Company-based view: show each company with question counts per skill */
+        <div className="mb-6">
+          <div className="text-xs font-semibold text-muted mb-3">Company-wise question counts</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {COMPANIES.filter(Boolean).map((company) => {
+              const companyItems = {
+                reading: (items.reading || []).filter((i: any) => i.company === company),
+                listening: (items.listening || []).filter((i: any) => i.company === company),
+                speaking: (items.speaking || []).filter((i: any) => i.company === company),
+                writing: (items.writing || []).filter((i: any) => i.company === company),
+                quiz: (items.quiz || []).filter((i: any) => i.company === company),
+              };
+              const total = Object.values(companyItems).reduce((sum, arr) => sum + arr.length, 0);
+              return (
+                <div key={company} className="ds-card p-4 hover:bg-surface2 transition-colors cursor-pointer"
+                  onClick={() => setCompanyFilter(company)}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Building2 size={16} style={{ color: "var(--secondary)" }} />
+                    <span className="text-sm font-bold">{company}</span>
+                    <span className="ml-auto text-xs px-2 py-0.5 rounded-full font-medium"
+                      style={{ background: "var(--secondary)", color: "white" }}>
+                      {total} questions
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {SECTION_CONFIG.map((s) => {
+                      const Icon = s.icon;
+                      const count = companyItems[s.key as keyof typeof companyItems]?.length || 0;
+                      return (
+                        <div key={s.key} className="text-center">
+                          <Icon size={12} style={{ color: count > 0 ? s.color : "var(--muted)" }} className="mx-auto mb-0.5" />
+                          <div className="text-xs font-bold" style={{ color: count > 0 ? s.color : "var(--muted)" }}>{count}</div>
+                          <div className="text-[9px] text-muted truncate">{s.key === "quiz" ? "MCQ" : s.label}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+          {SECTION_CONFIG.map((s) => {
+            const Icon = s.icon;
+            const countKey = s.key === "reading" ? "reading_passages" : s.key === "listening" ? "listening_passages" :
+              s.key === "speaking" ? "task_items" : s.key === "writing" ? "writing_prompts" : "quiz_items";
+            const count = activeCounts[countKey] || 0;
+            return (
+              <div key={s.key} className="ds-card p-3 text-center cursor-pointer hover:bg-surface2 transition-colors"
+                onClick={() => { toggleSection(s.key); if (!expanded[s.key]) setTimeout(() => document.getElementById(`section-${s.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 100); }}>
+                <Icon size={18} style={{ color: s.color }} className="mx-auto mb-1" />
+                <div className="text-2xl font-bold" style={{ color: s.color }}>{count}</div>
+                <div className="text-[11px] text-muted">{s.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="ds-card p-3 mb-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-4">
-            <span className="text-xs font-semibold">Total: {totalQuestions} questions across all categories</span>
-            <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)}
-              className="text-xs p-1.5 rounded border bg-transparent" style={{ borderColor: "var(--border)" }}>
-              <option value="">All Companies</option>
-              {COMPANIES.filter(Boolean).map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+            <span className="text-xs font-semibold">
+              {isCompanyView ? `Company Questions: ${totalQuestions}` : `General Questions: ${totalQuestions}`}
+            </span>
+            {isCompanyView && (
+              <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)}
+                className="text-xs p-1.5 rounded border bg-transparent" style={{ borderColor: "var(--border)" }}>
+                <option value="__company__">All Companies</option>
+                {_allCompanies.filter(Boolean).map((c: string) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            )}
           </div>
           <span className="text-[11px] text-muted">{PAGE_SIZE} per page</span>
         </div>
-        {companyFilter && (
+        {companyFilter && companyFilter !== "__company__" && (
           <div className="mt-2 text-[11px] text-muted">
-            Showing only <strong style={{ color: "var(--primary)" }}>{companyFilter}</strong> questions
-            <button onClick={() => setCompanyFilter("")} className="ml-2 underline">Show all</button>
+            Showing only <strong style={{ color: "var(--secondary)" }}>{companyFilter}</strong> questions
+            <button onClick={() => setCompanyFilter("__company__")} className="ml-2 underline">Show all companies</button>
           </div>
         )}
       </div>
@@ -284,7 +432,7 @@ function QuestionBank() {
           const isExpanded = expanded[section.key] || false;
           const countKey = section.key === "reading" ? "reading_passages" : section.key === "listening" ? "listening_passages" :
             section.key === "speaking" ? "task_items" : section.key === "writing" ? "writing_prompts" : "quiz_items";
-          const count = counts[countKey] || 0;
+          const count = activeCounts[countKey] || 0;
           const p = page[section.key] || 0;
           const tp = totalPages(section.key);
           const pageItems = getPageItems(section.key);
@@ -420,6 +568,7 @@ function QuestionBank() {
       </div>
 
       {showAdd && <AddQuestionModal type={addType} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); loadData(); }} />}
+      {showBulkUpload && <BulkUploadModal onClose={() => setShowBulkUpload(false)} onCreated={() => { setShowBulkUpload(false); loadData(); }} />}
     </>
   );
 }
@@ -798,7 +947,7 @@ return (
               <select value={form.company} onChange={(e) => set("company", e.target.value)}
                 className="w-full text-xs p-1.5 rounded border bg-transparent mt-1" style={{ borderColor: "var(--border)" }}>
                 <option value="">General (All)</option>
-                {COMPANIES.filter(Boolean).map((c) => (<option key={c} value={c}>{c}</option>))}
+                {_allCompanies.filter(Boolean).map((c: string) => (<option key={c} value={c}>{c}</option>))}
               </select>
             </label>
             <label className="block">
@@ -819,6 +968,185 @@ return (
             className="px-4 py-2 text-xs rounded-md text-white disabled:opacity-50 flex items-center gap-2 transition-colors"
             style={{ background: color }}>
             {loading ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : "Save Question"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BulkUploadModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void; }) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [category, setCategory] = useState("quiz");
+  const [company, setCompany] = useState("");
+  const [jsonText, setJsonText] = useState(
+    '{"items": [{"stem": "Question text", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "Explanation"}]}'
+  );
+  const [result, setResult] = useState<{ created: number; errors: { index: number; error: string }[] } | null>(null);
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (!parsed.items || !Array.isArray(parsed.items)) {
+        throw new Error("JSON must contain an 'items' array");
+      }
+
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/platform/questions/bulk`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          items: parsed.items,
+          category,
+          company,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Failed" }));
+        throw new Error(err.detail || "Failed to upload questions");
+      }
+
+      const data = await res.json();
+      setResult({ created: data.created, errors: data.errors || [] });
+      toast("success", `Successfully created ${data.created} questions`);
+    } catch (e: any) {
+      setError(e.message);
+      toast("error", e.message || "Failed to upload questions");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getCategoryExample = () => {
+    switch (category) {
+      case "quiz":
+      case "grammar":
+      case "vocabulary":
+        return '{"items": [{"stem": "Question text", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "Why this is correct"}]}';
+      case "reading":
+        return '{"items": [{"stem": "Passage Title", "body": "Passage text...", "kind": "article", "questions": [{"stem": "Question?", "options": ["A", "B", "C", "D"], "correct_index": 0}]}]}';
+      case "listening":
+        return '{"items": [{"stem": "Audio Title", "transcript": "What the audio says...", "questions": [{"stem": "Question?", "options": ["A", "B", "C", "D"], "correct_index": 0}]}]}';
+      case "writing":
+        return '{"items": [{"stem": "Task Title", "prompt": "Write about...", "kind": "essay", "scenario": "Situation...", "key_points": ["Point 1", "Point 2"]}]}';
+      case "speaking":
+        return '{"items": [{"stem": "Prompt text", "task_type": "open_response", "reference_text": "Expected answer"}]}';
+      default:
+        return '{"items": []}';
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-bold flex items-center gap-2">
+            <Upload size={16} style={{ color: "var(--primary)" }} />
+            Bulk Upload Questions
+          </h2>
+          <button onClick={onClose} className="text-muted hover:text-foreground"><X size={16} /></button>
+        </div>
+
+        {error && (
+          <div className="text-xs mb-3 p-2 rounded flex items-start gap-2"
+            style={{ background: "color-mix(in srgb, var(--rag-red) 10%, transparent)", color: "var(--rag-red)" }}>
+            <AlertTriangle size={12} className="shrink-0 mt-0.5" /> {error}
+          </div>
+        )}
+
+        {result && (
+          <div className="text-xs mb-3 p-3 rounded"
+            style={{ background: "color-mix(in srgb, var(--rag-green) 10%, transparent)", color: "var(--rag-green)" }}>
+            <div className="font-semibold mb-1">Upload Complete</div>
+            <div>Created: {result.created} questions</div>
+            {result.errors.length > 0 && (
+              <div className="mt-2">
+                <div className="font-semibold">Errors:</div>
+                {result.errors.map((err, i) => (
+                  <div key={i} className="text-[11px]">Item {err.index}: {err.error}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-[11px] text-muted font-medium">Category *</span>
+              <select value={category} onChange={(e) => setCategory(e.target.value)}
+                className="w-full text-xs p-1.5 rounded border bg-transparent mt-1" style={{ borderColor: "var(--border)" }}>
+                <option value="quiz">Grammar & Vocabulary (MCQ)</option>
+                <option value="grammar">Grammar</option>
+                <option value="vocabulary">Vocabulary</option>
+                <option value="reading">Reading</option>
+                <option value="listening">Listening</option>
+                <option value="writing">Writing</option>
+                <option value="speaking">Speaking</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-muted font-medium">Company</span>
+              <select value={company} onChange={(e) => setCompany(e.target.value)}
+                className="w-full text-xs p-1.5 rounded border bg-transparent mt-1" style={{ borderColor: "var(--border)" }}>
+                <option value="">General (All Companies)</option>
+                {_allCompanies.filter(Boolean).map((c: string) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-muted font-medium">JSON Data *</span>
+              <button onClick={() => setJsonText(getCategoryExample())}
+                className="text-[10px] text-primary hover:underline">
+                Load Example
+              </button>
+            </div>
+            <textarea value={jsonText} onChange={(e) => setJsonText(e.target.value)}
+              className="w-full text-xs p-2 rounded border bg-transparent min-h-[200px] font-mono"
+              style={{ borderColor: "var(--border)" }}
+              placeholder="Paste JSON here..." />
+          </div>
+
+          <div className="text-[10px] text-muted p-2 rounded" style={{ background: "var(--surface-2)" }}>
+            <strong>Format:</strong> Each item should have:
+            {category === "quiz" || category === "grammar" || category === "vocabulary" ? (
+              <span> stem, options (array of 4), correct_index (0-3), explanation</span>
+            ) : category === "reading" ? (
+              <span> stem (title), body (passage text), kind, questions (array)</span>
+            ) : category === "listening" ? (
+              <span> stem (title), transcript, questions (array)</span>
+            ) : category === "writing" ? (
+              <span> stem (title), prompt, kind, scenario, key_points (array)</span>
+            ) : (
+              <span> stem (prompt text), task_type, reference_text</span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
+          <button onClick={onClose} disabled={loading}
+            className="px-4 py-2 text-xs rounded-md bg-surface2 text-muted hover:bg-surface transition-colors">
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={loading}
+            className="px-4 py-2 text-xs rounded-md text-white disabled:opacity-50 flex items-center gap-2 transition-colors"
+            style={{ background: "var(--brand-grad)" }}>
+            {loading ? <><Loader2 size={12} className="animate-spin" /> Uploading...</> : "Upload Questions"}
           </button>
         </div>
       </div>

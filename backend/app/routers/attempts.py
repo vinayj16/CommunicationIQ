@@ -2206,7 +2206,7 @@ async def _diagnosis_for(session: TenantSession, attempt: Attempt,
         if r.response_id is not None:
             counts[r.dimension] = counts.get(r.dimension, 0) + 1
     return app_diagnosis.diagnose(
-        dims, scale_max=overall.scale_max if overall else 80.0,
+        dims, scale_max=overall.scale_max if overall else 100.0,
         response_counts=counts, available_practice=available_practice)
 
 
@@ -2401,7 +2401,7 @@ async def _result(session: TenantSession, attempt: Attempt,
     for row in scores:
         if row.response_id is not None:
             counts[row.dimension] = counts.get(row.dimension, 0) + 1
-    scale_max = overall_row.scale_max if overall_row else 80.0
+    scale_max = overall_row.scale_max if overall_row else 100.0
 
     # The practice profiles this tenant can actually start. A dimension
     # whose practice is missing here cannot become the primary, and no

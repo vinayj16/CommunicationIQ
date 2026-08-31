@@ -75,6 +75,13 @@ async def lifespan(_app: FastAPI):
         from app.narration.worker import run_forever
         narration_task = asyncio.create_task(run_forever())
 
+    # AI question generation scheduler
+    question_gen_task = None
+    if settings.auto_question_generation and settings.groq_api_key:
+        from app.question_generator import start_scheduler
+        start_scheduler()
+        log.info("AI question generation scheduler started")
+
     yield
 
     if narration_task is not None:
@@ -83,6 +90,9 @@ async def lifespan(_app: FastAPI):
             await narration_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
+
+    from app.question_generator import stop_scheduler
+    stop_scheduler()
 
 
 app = FastAPI(

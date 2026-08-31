@@ -100,8 +100,8 @@ def check(draft: NarrationDraft, evidence: NarrationEvidence) -> NarrationDraft:
     # Numbers: fabricated assessment figures are rejected; practice-advice
     # numbers and small counts are allowed. See module docstring.
     supplied = _supplied_numbers(evidence)
-    scale = evidence.attempt.get("scale") or [20, 80]
-    scale_min = float(scale[0]) if scale else 20.0
+    scale = evidence.attempt.get("scale") or [0, 100]
+    scale_min = float(scale[0]) if scale else 0.0
     for blob in (headline, summary, focus, action, *caveats):
         low = blob.lower()
         for m in _NUM.finditer(blob):

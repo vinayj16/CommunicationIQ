@@ -498,8 +498,8 @@ class ScoreRecord(Document):
     response_id: str | None = Field(default=None, index=True)
     dimension: str = Field(default="", index=True)
     score: float
-    scale_min: float = 20
-    scale_max: float = 80
+    scale_min: float = 0
+    scale_max: float = 100
     band: str = ""
     confidence: float | None = None
     provider_id: str = ""
@@ -820,6 +820,26 @@ class ExamReview(Document):
         name = "exam_reviews"
 
 
+class Company(Document):
+    """A company profile — used to group company-specific questions and exams.
+
+    Super admins can create new companies dynamically. Each company has a
+    display name, color, description, and active status. Questions are linked
+    to companies via the `company` field on QuizItem, ReadingPassage, etc.
+    """
+
+    id: StrId = Field(default_factory=_uuid, alias="_id")
+    name: str = Field(min_length=1, max_length=100, unique=True)
+    slug: str = Field(default="", max_length=100)
+    color: str = Field(default="#6366f1")
+    description: str = Field(default="")
+    is_active: bool = True
+    created_at: datetime | None = Field(default_factory=_now)
+
+    class Settings:
+        name = "companies"
+
+
 TENANT_DOCUMENTS = [
     User, ConsentRecord, Cohort, CohortMember, Invitation, SimulationProfile,
     ProfileSection, WritingSubmissionRow, ReadingAttempt, ListeningAttempt,
@@ -833,5 +853,5 @@ TENANT_DOCUMENTS = [
 # These live in the control database with their original collection names.
 # Each carries tenant_id so content can optionally be scoped per institution.
 SHARED_DOCUMENTS = [
-    ReadingPassage, WritingPrompt, ListeningPassage, QuizItem, TaskItem,
+    ReadingPassage, WritingPrompt, ListeningPassage, QuizItem, TaskItem, Company,
 ]

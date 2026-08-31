@@ -843,6 +843,50 @@ h1, h2, h3, h4 { letter-spacing: -0.01em; }
 .countdown-warn { color: var(--rag-amber); }
 .countdown-critical { color: var(--rag-red); }
 
+/* ---------------------------------------------------------------------------
+   EXAM SIDEBAR — question navigation panel for quiz, reading, writing
+   --------------------------------------------------------------------------- */
+.exam-sidebar {
+  position: sticky;
+  top: 80px;
+  height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+}
+.exam-sidebar__grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.5rem;
+}
+.exam-sidebar__cell {
+  aspect-ratio: 1;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.exam-sidebar__cell:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.exam-sidebar__cell--current {
+  ring: 2px solid var(--primary);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+.exam-sidebar__cell--answered {
+  background: var(--rag-green);
+  color: #fff;
+}
+.exam-sidebar__cell--not-attempted {
+  background: var(--surface-2);
+  color: var(--muted);
+  border: 1.5px solid var(--border);
+}
+
 /* Microphone state. One dot, four meanings, never ambiguous. */
 .mic-dot {
   width: 12px; height: 12px; border-radius: 999px;

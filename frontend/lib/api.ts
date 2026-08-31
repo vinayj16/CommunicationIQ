@@ -556,6 +556,22 @@ export const api = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     get<{items: Record<string, any>[]; total: number; page: number; page_size: number; total_pages: number}>(
       `/platform/questions/items?tenant_id=${tenantId}&category=${category}&page=${page}&page_size=${pageSize}`),
+  platformBulkUploadQuestions: (body: { items: Record<string, unknown>[]; category: string; company: string }) =>
+    post<{ ok: boolean; created: number; errors: { index: number; error: string }[]; total: number }>(
+      "/platform/questions/bulk", body),
+  platformGenerateQuestions: () =>
+    post<{ ok: boolean; generated: Record<string, number> }>(
+      "/platform/questions/generate", {}),
+  platformListCompanies: () =>
+    get<{ id: string; name: string; slug: string; color: string; description: string; is_active: boolean; question_counts: Record<string, number> }[]>(
+      "/platform/companies"),
+  platformCreateCompany: (body: { name: string; color?: string; description?: string }) =>
+    post<{ id: string; name: string; ok: boolean }>("/platform/companies", body),
+  platformUpdateCompany: (id: string, body: Record<string, unknown>) =>
+    patch<{ ok: boolean }>(`/platform/companies/${id}`, body),
+  platformDeleteCompany: (id: string) =>
+    del<{ ok: boolean }>(`/platform/companies/${id}`),
+
   platformDeleteQuestion: async (collection: string, itemId: string, tenantId: string): Promise<void> => {
     const token = getToken();
     const res = await fetch(`${API_BASE}/platform/questions/${collection}/${itemId}?tenant_id=${tenantId}`, {
@@ -1259,7 +1275,8 @@ export interface LedgerEntry {
 
 export interface QuizItem {
   id: string; category: string; stem: string; options: string[];
-  seconds_allowed: number; is_review: boolean;
+  seconds_allowed: number; is_review: boolean; company: string;
+  difficulty?: number;
 }
 
 export interface QuizResultItem {
@@ -1311,7 +1328,7 @@ export interface SkillsOverview {
 
 export interface WritingPromptRow {
   id: string; title: string; kind: string;
-  scenario: string; prompt: string;
+  company: string; scenario: string; prompt: string;
   min_words: number; suggested_minutes: number;
   key_points: string[]; best_score: number | null;
 }
@@ -1330,7 +1347,7 @@ export interface WritingResult {
 }
 
 export const writingApi = {
-  prompts: () => get<WritingPromptRow[]>("/student/writing/prompts"),
+  prompts: (company?: string) => get<WritingPromptRow[]>(`/student/writing/prompts${company ? `?company=${encodeURIComponent(company)}` : ""}`),
   submit: (id: string, body: { text: string; minutes_spent: number }) =>
     post<WritingResult>(`/student/writing/prompts/${id}/submit`, body),
   submissions: () => get<WritingResult[]>("/student/writing/submissions"),
@@ -1367,7 +1384,8 @@ export interface ReadingResult {
 }
 
 export const readingApi = {
-  passages: () => get<ReadingPassageRow[]>("/student/reading/passages"),
+  random: (company?: string) => get<ReadingStart>(`/student/reading/random${company ? `?company=${encodeURIComponent(company)}` : ""}`),
+  passages: (company?: string) => get<ReadingPassageRow[]>(`/student/reading/passages${company ? `?company=${encodeURIComponent(company)}` : ""}`),
   start: (id: string) => post<ReadingStart>(`/student/reading/passages/${id}/start`),
   questions: (attemptId: string) =>
     get<ReadingQuestion[]>(`/student/reading/attempts/${attemptId}/questions`),
@@ -1412,7 +1430,8 @@ export interface ListeningResult {
 }
 
 export const listeningApi = {
-  passages: () => get<ListeningPassageRow[]>("/student/listening/passages"),
+  random: (company?: string) => get<ListeningStart>(`/student/listening/random${company ? `?company=${encodeURIComponent(company)}` : ""}`),
+  passages: (company?: string) => get<ListeningPassageRow[]>(`/student/listening/passages${company ? `?company=${encodeURIComponent(company)}` : ""}`),
   start: (id: string) =>
     post<ListeningStart>(`/student/listening/passages/${id}/start`),
   questions: (attemptId: string) =>
@@ -1458,7 +1477,7 @@ export const gameApi = {
 };
 
 export const practiceApi = {
-  nextQuiz: (count = 10) => get<QuizItem[]>(`/student/quiz/next?count=${count}`),
+  nextQuiz: (count = 10, company?: string, difficulty?: string) => get<QuizItem[]>(`/student/quiz/next?count=${count}${company !== undefined ? `&company=${encodeURIComponent(company)}` : ""}${difficulty ? `&difficulty=${encodeURIComponent(difficulty)}` : ""}`),
   submitQuiz: (answers: { item_id: string; selected_index: number | null }[]) =>
     post<QuizResult>("/student/quiz/submit", { answers }),
   mistakes: () => get<Mistake[]>("/student/mistakes"),

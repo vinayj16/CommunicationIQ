@@ -88,8 +88,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="md:hidden"><BrandMark size={24} /></div>
 
           <div className="flex-1 min-w-0">
-            {user?.tenant_name && (
-              <div className="text-xs font-semibold truncate">{user.tenant_name}</div>
+            {user?.tenant_display_name && (
+              <div className="text-xs font-semibold truncate">{user.tenant_display_name}</div>
+            )}
+            {user?.tenant_name && user?.tenant_display_name !== user?.tenant_name && (
+              <div className="text-[10px] text-muted truncate">{user.tenant_name}</div>
             )}
             {user?.scope === "platform" && (
               <div className="text-xs font-semibold">Platform console</div>

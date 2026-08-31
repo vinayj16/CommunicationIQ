@@ -17,11 +17,15 @@ export type ProctorFlag =
   | "screenshot_attempt"
   | "fullscreen_exit"
   | "clipboard_paste"
+  | "clipboard_copy"
+  | "clipboard_cut"
   | "devtools_open"
   | "right_click"
   | "copy_paste"
   | "phone_detected"
-  | "camera_blocked";
+  | "camera_blocked"
+  | "screen_share_attempt"
+  | "device_change";
 
 export interface ProctorEvent {
   /** ISO timestamp when the event occurred */

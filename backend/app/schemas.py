@@ -787,9 +787,9 @@ class ProfileRequest(BaseModel):
     # Empty means "use the engine's own weights", which is what every existing
     # profile does and what practice should keep doing.
     scoring_weights: dict[str, float] = {}
-    # Overall, on the internal 20-80 scale. None means this assessment does
+    # Overall, on the internal 0-100 scale. None means this assessment does
     # not pass or fail anybody -- right for practice, wrong for a hiring round.
-    pass_threshold: float | None = Field(default=None, ge=20, le=80)
+    pass_threshold: float | None = Field(default=None, ge=0, le=100)
     # {dimension: floor}. Failing any floor fails the assessment even when the
     # weighted overall clears the bar.
     skill_thresholds: dict[str, float] = {}
@@ -818,9 +818,9 @@ class ProfileRequest(BaseModel):
                 raise ValueError(
                     f"Not a measured dimension: {dimension}. "
                     f"Available: {', '.join(sorted(ENGINE_WEIGHTS))}.")
-            if not 20 <= float(floor) <= 80:
+            if not 0 <= float(floor) <= 100:
                 raise ValueError(
-                    f"A floor is on the same 20-80 scale as the scores. "
+                    f"A floor is on the 0-100 scale as the scores. "
                     f"{dimension} was given {floor}.")
         return v
 
@@ -922,7 +922,7 @@ class PrimaryDiagnosisOut(BaseModel):
     label: str = ""
     score: float | None = None
     responses: int = 0
-    scale_max: float = 80.0
+    scale_max: float = 100.0
     confidence: str = ""
     # The tied group (status "tied") or the eligible set, weakest first.
     candidates: list[dict] = []
@@ -1005,8 +1005,8 @@ class AttemptResult(BaseModel):
     attempt_number: int
     overall: float | None
     band: str = ""
-    scale_min: float = 20
-    scale_max: float = 80
+    scale_min: float = 0
+    scale_max: float = 100
     dimensions: dict[str, float] = {}
     confidence: dict[str, float] = {}
     # Dimension → why it is not scored yet. Shown, not hidden.
@@ -1433,6 +1433,7 @@ class WritingPromptOut(BaseModel):
     id: str
     title: str
     kind: str
+    company: str = ""
     scenario: str
     prompt: str
     min_words: int
@@ -1654,7 +1655,10 @@ class QuizItemOut(BaseModel):
     seconds_allowed: int
     # True when this item is resurfacing from the mistake bank.
     is_review: bool = False
-    # The correct answer is deliberately absent. It arrives with the result.
+    # Company round vs general question.
+    company: str = ""
+    # Difficulty level (0.0 easy → 1.0 hard)
+    difficulty: float = 0.5
 
 
 class QuizAnswer(BaseModel):

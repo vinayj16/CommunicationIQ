@@ -582,6 +582,180 @@ async def create_quiz_item(body: dict) -> dict:
     return {"id": item_id, "ok": True}
 
 
+@router.post("/questions/bulk")
+async def bulk_upload_questions(body: dict) -> dict:
+    """Bulk upload questions from JSON payload.
+
+    Accepts a JSON object with:
+    - items: list of question objects
+    - category: "quiz" | "reading" | "listening" | "writing" | "speaking"
+    - company: company name (optional, empty for general)
+
+    Each question object should have:
+    - stem/question: the question text
+    - options: list of answer options (for MCQ)
+    - correct_index: index of correct answer (for MCQ)
+    - explanation: explanation for the answer
+    - difficulty: 0.0-1.0 (optional, default 0.3)
+    """
+    from app.db import ensure_shared_models
+    import uuid
+
+    models = await ensure_shared_models()
+    items = body.get("items", [])
+    category = body.get("category", "quiz")
+    company = body.get("company", "")
+
+    created = 0
+    errors = []
+
+    for i, item in enumerate(items):
+        try:
+            stem = item.get("stem") or item.get("question", "")
+            options = item.get("options", [])
+            correct_index = item.get("correct_index", 0)
+            explanation = item.get("explanation", "")
+            difficulty = item.get("difficulty", 0.3)
+
+            if not stem:
+                errors.append({"index": i, "error": "Missing stem/question"})
+                continue
+
+            if category == "quiz" or category == "grammar" or category == "vocabulary":
+                item_id = str(uuid.uuid4())
+                qi = models.QuizItem(
+                    id=item_id,
+                    category=category if category in ("grammar", "vocabulary") else "grammar",
+                    stem=stem,
+                    options=options if len(options) >= 2 else ["Option A", "Option B", "Option C", "Option D"],
+                    correct_index=correct_index,
+                    explanation=explanation,
+                    company=company,
+                    difficulty=difficulty,
+                    seconds_allowed=30,
+                    status="published",
+                )
+                await qi.create()
+                created += 1
+
+            elif category == "reading":
+                # Create reading passage with questions
+                passage_id = str(uuid.uuid4())
+                body_text = item.get("body", item.get("passage", ""))
+                passage = models.ReadingPassage(
+                    id=passage_id,
+                    title=stem[:100],
+                    kind=item.get("kind", "article"),
+                    body=body_text,
+                    company=company,
+                    word_count=len(body_text.split()),
+                    difficulty=difficulty,
+                    status="published",
+                )
+                await passage.create()
+
+                # Create associated questions
+                for q in item.get("questions", []):
+                    qi = models.QuizItem(
+                        id=str(uuid.uuid4()),
+                        category="reading_comprehension",
+                        stem=q.get("stem", ""),
+                        options=q.get("options", []),
+                        correct_index=q.get("correct_index", 0),
+                        explanation=q.get("explanation", ""),
+                        passage_id=passage_id,
+                        company=company,
+                        difficulty=q.get("difficulty", difficulty),
+                        status="published",
+                    )
+                    await qi.create()
+                created += 1
+
+            elif category == "listening":
+                passage_id = str(uuid.uuid4())
+                passage = models.ListeningPassage(
+                    id=passage_id,
+                    title=stem[:100],
+                    kind=item.get("kind", "short_talk"),
+                    transcript=item.get("transcript", ""),
+                    company=company,
+                    audio_key=item.get("audio_key", ""),
+                    accent=item.get("accent", "indian"),
+                    plays_allowed=item.get("plays_allowed", 1),
+                    approx_seconds=item.get("approx_seconds", 45),
+                    difficulty=difficulty,
+                    status="published",
+                )
+                await passage.create()
+
+                for q in item.get("questions", []):
+                    qi = models.QuizItem(
+                        id=str(uuid.uuid4()),
+                        category="audio_comprehension",
+                        stem=q.get("stem", ""),
+                        options=q.get("options", []),
+                        correct_index=q.get("correct_index", 0),
+                        explanation=q.get("explanation", ""),
+                        passage_id=passage_id,
+                        company=company,
+                        difficulty=q.get("difficulty", difficulty),
+                        status="published",
+                    )
+                    await qi.create()
+                created += 1
+
+            elif category == "writing":
+                prompt_id = str(uuid.uuid4())
+                prompt = models.WritingPrompt(
+                    id=prompt_id,
+                    title=stem[:100],
+                    kind=item.get("kind", "essay"),
+                    prompt=item.get("prompt", stem),
+                    company=company,
+                    scenario=item.get("scenario", ""),
+                    key_points=item.get("key_points", []),
+                    min_words=item.get("min_words", 150),
+                    suggested_minutes=item.get("suggested_minutes", 20),
+                    difficulty=difficulty,
+                    status="published",
+                )
+                await prompt.create()
+                created += 1
+
+            elif category == "speaking":
+                item_id = str(uuid.uuid4())
+                ti = models.TaskItem(
+                    id=item_id,
+                    task_type=item.get("task_type", "open_response"),
+                    prompt_text=stem,
+                    company=company,
+                    reference_text=item.get("reference_text", ""),
+                    prompt_audio_key=item.get("audio_key", ""),
+                    difficulty=difficulty,
+                    status="published",
+                )
+                await ti.create()
+                created += 1
+
+            else:
+                errors.append({"index": i, "error": f"Unknown category: {category}"})
+
+        except Exception as e:
+            errors.append({"index": i, "error": str(e)})
+
+    await audit_log.record_system(
+        "platform.bulk_upload",
+        entity=f"{category}:{company or 'general'}",
+    )
+
+    return {
+        "ok": True,
+        "created": created,
+        "errors": errors,
+        "total": len(items),
+    }
+
+
 @router.post("/questions/speaking")
 async def create_speaking_item(body: dict) -> dict:
     item_id = await _create_speaking(body)
@@ -610,6 +784,96 @@ async def create_listening_passage(body: dict) -> dict:
     passage_id = await _create_listening(body)
     await audit_log.record_system("platform.create_question", entity="listening_passage")
     return {"passage_id": passage_id, "ok": True}
+
+
+@router.post("/questions/generate")
+async def generate_questions() -> dict:
+    """Manually trigger AI question generation via Groq API."""
+    from app.question_generator import run_daily_generation
+    result = await run_daily_generation()
+    return {"generated": result, "ok": True}
+
+
+# ── Company management ────────────────────────────────────────────────────
+
+@router.get("/companies")
+async def list_companies() -> list[dict]:
+    """List all companies with question counts."""
+    from app.models.tenant import Company, QuizItem, ReadingPassage, WritingPrompt, ListeningPassage, TaskItem
+    companies = await Company.find(Company.is_active == True).sort(Company.name).to_list()
+    result = []
+    for c in companies:
+        quiz_count = await QuizItem.find(QuizItem.company == c.name).count()
+        reading_count = await ReadingPassage.find(ReadingPassage.company == c.name).count()
+        writing_count = await WritingPrompt.find(WritingPrompt.company == c.name).count()
+        listening_count = await ListeningPassage.find(ListeningPassage.company == c.name).count()
+        speaking_count = await TaskItem.find(TaskItem.company == c.name).count()
+        result.append({
+            "id": c.id, "name": c.name, "slug": c.slug,
+            "color": c.color, "description": c.description,
+            "is_active": c.is_active, "created_at": str(c.created_at),
+            "question_counts": {
+                "quiz": quiz_count, "reading": reading_count,
+                "writing": writing_count, "listening": listening_count,
+                "speaking": speaking_count,
+                "total": quiz_count + reading_count + writing_count + listening_count + speaking_count,
+            },
+        })
+    return result
+
+
+@router.post("/companies")
+async def create_company(body: dict) -> dict:
+    """Create a new company."""
+    from app.models.tenant import Company
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Company name is required")
+    existing = await Company.find(Company.name == name).first()
+    if existing:
+        raise HTTPException(409, f"Company '{name}' already exists")
+    slug = body.get("slug") or name.lower().replace(" ", "-")
+    company = Company(
+        name=name, slug=slug,
+        color=body.get("color", "#6366f1"),
+        description=body.get("description", ""),
+    )
+    await company.create()
+    await audit_log.record_system("platform.create_company", entity=name)
+    return {"id": company.id, "name": company.name, "ok": True}
+
+
+@router.patch("/companies/{company_id}")
+async def update_company(company_id: str, body: dict) -> dict:
+    """Update a company's details."""
+    from app.models.tenant import Company
+    company = await Company.get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+    if "name" in body:
+        company.name = body["name"]
+    if "slug" in body:
+        company.slug = body["slug"]
+    if "color" in body:
+        company.color = body["color"]
+    if "description" in body:
+        company.description = body["description"]
+    if "is_active" in body:
+        company.is_active = body["is_active"]
+    await company.save()
+    return {"ok": True}
+
+
+@router.delete("/companies/{company_id}")
+async def delete_company(company_id: str) -> dict:
+    """Soft-delete a company (set is_active=false)."""
+    from app.models.tenant import Company
+    company = await Company.get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+    company.is_active = False
+    await company.save()
+    return {"ok": True}
 
 
 @router.delete("/questions/{collection}/{item_id}")

@@ -22,6 +22,8 @@ import {
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
 import { ProctorWarning } from "@/components/proctoring/ProctorWarning";
+import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
+import { FullscreenGuard } from "@/components/FullscreenGuard";
 
 export default function RunPage() {
   return (
@@ -962,12 +964,19 @@ function Runner() {
     setPhase("submitting");
     recorder.current?.close();
     recorder.current = null;
+    proctoring.stopCamera();
     try {
       await attemptApi.submit(id);
       router.replace(`/results/${id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Scoring failed.");
       setPhase("failed");
+    }
+  }
+
+  function endExam() {
+    if (confirm("Are you sure you want to end this exam? Your answers will be submitted.")) {
+      void finishAnyway();
     }
   }
 
@@ -1013,7 +1022,7 @@ function Runner() {
         </div>
       </Centered>
     );
-  }  if (phase === "failed") {
+  } else if (phase === "failed") {
     const noItems = error?.includes("no questions") || error?.includes("no items");
     return (
       <Centered>
@@ -1035,6 +1044,17 @@ function Runner() {
       </Centered>
     );
   }
+
+  // Build question statuses for the sidebar — must be before any early returns
+  const questionStatuses: ExamQuestionStatus[] = useMemo(() =>
+    payload ? payload.items.map((it, i) => ({
+      id: it.response_id,
+      index: i + 1,
+      answered: i < index,
+      selectedOption: null,
+    })) : [],
+    [payload, index]
+  );
 
   if (!item || !payload) return null;
 
@@ -1100,7 +1120,24 @@ function Runner() {
   const qTotal = item.continuous_numbering ? numbering.total : itemsInSection.length;
 
   return (
-    <div className={`runner${skin ? ` ${skin.theme}` : ""}`}>
+    <FullscreenGuard>
+    <ExamSidebar
+      questions={questionStatuses}
+      currentIndex={index}
+      totalQuestions={payload.items.length}
+      sectionTitle={payload.company || format.label}
+      companyLabel={payload.company ? `Company: ${payload.company}` : "General"}
+      timeRemaining={sittingLeft != null ? `${Math.floor(sittingLeft / 60)}:${String(sittingLeft % 60).padStart(2, "0")}` : undefined}
+      totalSecondsRemaining={sittingLeft ?? undefined}
+      onNavigate={(idx) => {
+        if (idx > index && idx < payload.items.length) {
+          setIndex(idx);
+        }
+      }}
+      onEndExam={endExam}
+      collapsed={false}
+    >
+      <div className={`runner${skin ? ` ${skin.theme}` : ""}`}>
       {/* Proctoring camera preview */}
       <CameraPreview
         videoRef={proctoring.videoRef}
@@ -1814,11 +1851,19 @@ function Runner() {
         {phase === "answer" && (
           isSvar ? (
             <div className="w-full max-w-3xl self-stretch text-center space-y-5">
-              {item.prompt_text && <div className="svar-qbar text-left">{item.prompt_text}</div>}
-              {item.key_points.length > 0 && (
+              {/* During recording, hide the question for question-based tasks so the student must recall from memory. read_aloud keeps it visible since reading IS the task. */}
+              {(item.task_type === "read_aloud" || item.task_type === "spoken_completion") && item.prompt_text && (
+                <div className="svar-qbar text-left">{item.prompt_text}</div>
+              )}
+              {(item.task_type === "read_aloud" || item.task_type === "spoken_completion") && item.key_points.length > 0 && (
                 <ul className="text-left mx-auto" style={{ maxWidth: "40rem", color: "var(--svar-navy)", fontStyle: "italic" }}>
                   {item.key_points.map((k, n) => <li key={n}>{k}</li>)}
                 </ul>
+              )}
+              {!['read_aloud', 'spoken_completion'].includes(item.task_type) && (
+                <p className="svar-instruct" style={{ color: "var(--svar-navy)" }}>
+                  Speak your answer now. The question is hidden during recording.
+                </p>
               )}
               <div className="svar-circle svar-circle--record is-live">
                 <span className="lbl">Recording</span>
@@ -1837,9 +1882,12 @@ function Runner() {
               <div className={`countdown ${seconds <= 3 ? "countdown-critical" : seconds <= 10 ? "countdown-warn" : ""}`}>
                 {seconds}
               </div>
-              {item.prompt_text
+              {/* During recording, hide the question for question-based tasks */}
+              {(item.task_type === "read_aloud" || item.task_type === "spoken_completion") && item.prompt_text
                 ? <p className="runner-prompt">{item.prompt_text}</p>
-                : <p className="runner-prompt" data-testid="answer-line">{answerLine(item.task_type)}</p>}
+                : !['read_aloud', 'spoken_completion'].includes(item.task_type)
+                  ? <p className="runner-prompt" data-testid="answer-line">Speak your answer now. The question is hidden during recording.</p>
+                  : <p className="runner-prompt" data-testid="answer-line">{answerLine(item.task_type)}</p>}
               {notice && (
                 <p className="runner-instruction" style={{ color: "var(--rag-amber)" }}>
                   {notice}
@@ -1883,6 +1931,8 @@ function Runner() {
         </div>
       </footer>
     </div>
+    </ExamSidebar>
+    </FullscreenGuard>
   );
 }
 

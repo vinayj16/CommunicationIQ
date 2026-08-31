@@ -1,11 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Flame, PenLine, Target, Zap } from "lucide-react";
+import { Flame, PenLine, Target, Zap, Loader2 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
-import { StepGuide } from "@/components/StepGuide";
 import { useToast } from "@/components/Toast";
 import {
-  Badge, EmptyState, ErrorNote, GapMeter, PageHeader, Section, Skeleton,
+  ErrorNote, GapMeter, PageHeader, Section, Skeleton,
 } from "@/components/ui";
 import {
   ApiError, writingApi,
@@ -13,8 +12,12 @@ import {
 } from "@/lib/api";
 import { useData } from "@/lib/useData";
 import { FullscreenPrompt } from "@/components/FullscreenPrompt";
+import { FullscreenGuard } from "@/components/FullscreenGuard";
+import { LevelSelect, type DifficultyLevel } from "@/components/LevelSelect";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
+import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
+import { markAttempted } from "@/lib/setTracker";
 
 export default function WritingPage() {
   return (
@@ -24,7 +27,7 @@ export default function WritingPage() {
   );
 }
 
-type Stage = "intro" | "browse" | "write" | "marked";
+type Stage = "intro" | "select" | "loading" | "write" | "marked";
 
 const KIND_LABEL: Record<string, string> = {
   email: "Email", report: "Report", essay: "Essay",
@@ -41,20 +44,23 @@ const MEASURE_LABEL: Record<string, string> = {
 
 function Writing() {
   const { toast } = useToast();
-  const { data, loading, error, reload } = useData(() => writingApi.prompts());
   const proctoring = useProctoring();
-
+  const { data, loading, error } = useData(() => writingApi.prompts());
   const [stage, setStage] = useState<Stage>("intro");
-  const [prompt, setPrompt] = useState<WritingPromptRow | null>(null);
+  const [prompts, setPrompts] = useState<WritingPromptRow[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [text, setText] = useState("");
   const [result, setResult] = useState<WritingResult | null>(null);
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
+  const [writeSeconds, setWriteSeconds] = useState(0);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>("");
   const openedAt = useRef<number>(0);
 
-  // Draft survives an accidental navigation. Losing four hundred words to a
-  // stray back button would be the single most infuriating thing this screen
-  // could do, and it costs one line to prevent.
+  const prompt = prompts[currentIndex] ?? null;
+
+  // Draft survives accidental navigation
   useEffect(() => {
     if (stage !== "write" || !prompt) return;
     const key = `writing-draft-${prompt.id}`;
@@ -68,13 +74,42 @@ function Writing() {
 
   const words = text.trim() ? text.trim().split(/\s+/).length : 0;
 
-  function begin(p: WritingPromptRow) {
-    setPrompt(p);
-    setText("");
-    setResult(null);
+  // Auto-start: pick 10 random general prompts
+  async function autoStart() {
+    setStage("loading");
     setProblem("");
-    openedAt.current = Date.now();
-    setStage("write");
+    try {
+      // Fetch all prompts, filter to general, pick 10 random
+      const allPrompts = await writingApi.prompts();
+      const general = allPrompts.filter(
+        (p) => !p.company || p.company === "" || p.company === "General"
+      );
+      const pool = general.length >= 10 ? general : allPrompts;
+      // Shuffle and take 10
+      const shuffled = [...pool].sort(() => Math.random() - 0.5);
+      const selected = shuffled.slice(0, Math.min(10, shuffled.length));
+      if (selected.length === 0) {
+        setProblem("No writing prompts available yet.");
+        setStage("intro");
+        return;
+      }
+      // Mark all selected prompts as attempted
+      for (const p of selected) {
+        markAttempted("writing", p.id);
+      }
+      setPrompts(selected);
+      setCurrentIndex(0);
+      setText("");
+      setResult(null);
+      openedAt.current = Date.now();
+      setWriteSeconds(0);
+      setStage("write");
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.detail : "Could not load writing prompts";
+      setProblem(msg);
+      toast("error", msg);
+      setStage("intro");
+    }
   }
 
   async function submit() {
@@ -88,8 +123,8 @@ function Writing() {
       });
       setResult(marked);
       window.localStorage.removeItem(`writing-draft-${prompt.id}`);
+      proctoring.stopCamera();
       setStage("marked");
-      reload();
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not submit";
       setProblem(msg);
@@ -99,40 +134,122 @@ function Writing() {
     }
   }
 
-  // Auto-start with a random prompt after fullscreen prompt
-  useEffect(() => {
-    if (data && data.length > 0 && stage === "browse" && !prompt && !busy) {
-      setBusy(true);
-      const random = data[Math.floor(Math.random() * data.length)];
-      begin(random);
+  function nextPrompt() {
+    if (currentIndex + 1 < prompts.length) {
+      setCurrentIndex(currentIndex + 1);
+      setText("");
+      setResult(null);
+      setWriteSeconds(0);
+      openedAt.current = Date.now();
+      setStage("write");
+    } else {
+      // All done — go back to start
+      setPrompts([]);
+      setCurrentIndex(0);
+      setStage("intro");
+      toast("success", "All writing tasks completed!");
     }
-  }, [data, stage, prompt, busy]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
   // Request camera when practice starts
   useEffect(() => {
-    if (stage !== "intro" && !proctoring.state.cameraActive) {
+    if (stage !== "intro" && stage !== "loading" && !proctoring.state.cameraActive) {
       proctoring.requestCamera();
     }
   }, [stage]);
 
+  // Timer for writing phase (20 minutes per prompt)
+  useEffect(() => {
+    if (stage !== "write") return;
+    const timer = setInterval(() => setWriteSeconds((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [stage]);
+
   if (stage === "intro") {
-    return <FullscreenPrompt onStart={() => setStage("browse")} />;
+    return <LevelSelect skill="writing" onSelect={(level) => { setDifficulty(level); setStage("select"); }} />;
   }
 
-  if (loading) return <Skeleton rows={5} />;
-  if (error) return <ErrorNote message={error} />;
+  if (stage === "select") {
+    return <FullscreenPrompt onStart={autoStart} />;
+  }
+
+  if (stage === "loading") {
+    return (
+      <>
+        <PageHeader title="Writing" sub="Loading tasks…" />
+        <div className="ds-card p-8 flex items-center justify-center gap-3">
+          <Loader2 size={18} className="animate-spin text-muted" />
+          <span className="text-xs text-muted">Preparing writing tasks…</span>
+        </div>
+      </>
+    );
+  }
 
   // ----------------------------------------------------------------- write --
   if (stage === "write" && prompt) {
     const short = words < prompt.min_words;
+    const isCompany = prompt.company && prompt.company !== "" && prompt.company !== "General";
+    const companyLabel = isCompany ? "Company Round" : "General";
+
+    // Build question statuses for all prompts in the set
+    const questionStatuses: ExamQuestionStatus[] = prompts.map((p, i) => ({
+      id: p.id,
+      index: i + 1,
+      answered: i < currentIndex || (i === currentIndex && text.trim().length > 0),
+      selectedOption: null,
+    }));
+
+    const totalWriteTime = 1200; // 20 minutes
+    const remainingSeconds = Math.max(0, totalWriteTime - writeSeconds);
+    const remainingMinutes = Math.floor(remainingSeconds / 60);
+    const remainingSecs = remainingSeconds % 60;
+
     return (
-      <>
+      <FullscreenGuard>
+      <ExamSidebar
+        questions={questionStatuses}
+        currentIndex={currentIndex}
+        totalQuestions={prompts.length}
+        sectionTitle="Writing Tasks"
+        companyLabel={companyLabel}
+        timeRemaining={`${remainingMinutes}:${String(remainingSecs).padStart(2, "0")}`}
+        totalSecondsRemaining={remainingSeconds}
+        onNavigate={(idx) => {
+          // Only allow going forward to completed prompts
+          if (idx <= currentIndex) {
+            // Already done — could review but for now skip
+          }
+        }}
+        collapsed={true}
+        onEndExam={() => {
+          if (confirm("Are you sure you want to end this practice?")) {
+            setPrompts([]);
+            setCurrentIndex(0);
+            setStage("intro");
+          }
+        }}
+        showInstructions={showInstructions}
+        onToggleInstructions={() => setShowInstructions(!showInstructions)}
+        instructions="Read the scenario and instructions carefully. Write your answer in the text area. Your draft is saved automatically. Submit when ready for scoring."
+      >
         <CameraPreview
           videoRef={proctoring.videoRef}
           faceCount={proctoring.state.faceCount}
           strikes={proctoring.state.strikes}
           isFocused={proctoring.state.isFocused}
         />
+
+        {/* Question header */}
+        <div className="flex items-center gap-3 mb-4">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">
+            Task {currentIndex + 1} of {prompts.length}
+          </span>
+          <div className="flex-1" />
+          <span className="text-xs text-muted">
+            {currentIndex} of {prompts.length} completed
+          </span>
+        </div>
+
         <PageHeader
           title={prompt.title}
           sub={`${KIND_LABEL[prompt.kind] ?? prompt.kind} · about ${prompt.suggested_minutes} minutes · at least ${prompt.min_words} words`}
@@ -143,10 +260,6 @@ function Writing() {
           <p className="text-sm font-semibold mt-3">{prompt.prompt}</p>
         </Section>
 
-        {/* The rubric is shown, not hidden. This is practice: a student who
-            knows what a competent answer has to cover learns more than one
-            guessing at it. The points say what to address, never what to
-            say — the words have to be theirs. */}
         <Section title="A good answer covers" className="mb-3">
           <ul className="space-y-1.5">
             {prompt.key_points.map((point) => (
@@ -179,14 +292,15 @@ function Writing() {
         {problem && <div className="mt-4"><ErrorNote message={problem} /></div>}
 
         <div className="flex gap-2 mt-4">
-          <button onClick={() => setStage("browse")}
-                  className="btn btn-ghost ds-focus">Back</button>
+          <button onClick={() => { setText(""); setStage("write"); }}
+                  className="btn btn-ghost ds-focus">Clear</button>
           <button onClick={submit} disabled={busy || words === 0}
                   className="btn btn-primary flex-1 ds-focus">
             {busy ? "Marking…" : short ? "Submit anyway" : "Submit"}
           </button>
         </div>
-      </>
+      </ExamSidebar>
+      </FullscreenGuard>
     );
   }
 
@@ -198,9 +312,9 @@ function Writing() {
           title={result.overall != null ? `Overall ${result.overall}` : "Not scored"}
           sub={`${result.title} · ${result.word_count} words`}
           action={
-            <button onClick={() => setStage("browse")}
+            <button onClick={nextPrompt}
                     className="btn btn-primary btn-sm ds-focus">
-              Another task
+              {currentIndex + 1 < prompts.length ? `Next task (${currentIndex + 2}/${prompts.length})` : "Done"}
             </button>
           }
         />
@@ -225,9 +339,7 @@ function Writing() {
                     {m.confidence > 0 ? m.score : "not measured"}
                   </span>
                 </div>
-                {m.confidence > 0 && <GapMeter percent={((m.score - 20) / 60) * 100} />}
-                {/* Every number says what it counted, so an admin can
-                    review it and see exactly why it came out this way. */}
+                {m.confidence > 0 && <GapMeter percent={m.score} />}
                 <p className="text-[11px] text-muted mt-1.5 leading-relaxed">{m.basis}</p>
               </div>
             ))}
@@ -249,9 +361,6 @@ function Writing() {
           </div>
         )}
 
-        {/* Said plainly, under the numbers rather than buried in a footer.
-            Four confident-looking scores would otherwise imply this can judge
-            whether the writing is any good, which it cannot. */}
         <Section title="What these numbers are not" className="mb-4">
           {result.notes.map((note) => (
             <p key={note} className="text-xs text-muted leading-relaxed">{note}</p>
@@ -270,64 +379,5 @@ function Writing() {
     );
   }
 
-  // ---------------------------------------------------------------- browse --
-  return (
-    <>
-      <PageHeader
-        title="Writing"
-        sub="Real workplace tasks — awkward emails, status reports, summaries. Scored on five measures."
-      />
-
-      <StepGuide
-        active={1}
-        steps={[
-          { label: "Pick a task", detail: "Real workplace situations, one screen each." },
-          { label: "Write your answer", detail: "Take your time — there is no clock on practice." },
-          { label: "Submit it", detail: "Scored on five measures the moment you do." },
-          { label: "Read the feedback", detail: "Each measure says exactly what it counted." },
-        ]}
-      />
-
-      {!data || data.length === 0 ? (
-        <EmptyState icon={PenLine} title="No prompts yet"
-                    desc="The writing bank is empty for this institution." />
-      ) : (
-        <div className="grid md:grid-cols-2 gap-3">
-          {data.map((p) => (
-            <button key={p.id} onClick={() => begin(p)}
-                    className="ds-card p-4 text-left hover:bg-surface2 transition-colors ds-focus">
-              <div className="flex items-start justify-between gap-2">
-                <div className="text-sm font-bold">{p.title}</div>
-                {p.best_score != null && (
-                  <Badge tone="var(--rag-green)">best {p.best_score}</Badge>
-                )}
-              </div>
-              <p className="text-[11px] text-muted mt-1 leading-relaxed line-clamp-2">
-                {p.scenario}
-              </p>
-              <div className="text-[11px] text-muted mt-2">
-                {KIND_LABEL[p.kind] ?? p.kind} · {p.min_words}+ words ·{" "}
-                about {p.suggested_minutes} min
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-
-      <Section title="How this is scored, and what it cannot see" className="mt-4">
-        <p className="text-xs text-muted leading-relaxed">
-          Five measures: whether you covered what was asked, whether the piece
-          holds together, how varied your language is, a set of common grammar
-          errors, and mechanics — capitals, full stops, spacing. Each one says
-          what it counted, so you can disagree with it.
-        </p>
-        <p className="text-xs text-muted leading-relaxed mt-2">
-          It is not a marker. It cannot tell whether your argument is sound,
-          whether what you wrote is true, or whether anyone would enjoy reading
-          it. Those need a person, and this is designed to leave room for one
-          rather than to replace them.
-        </p>
-      </Section>
-    </>
-  );
+  return null;
 }

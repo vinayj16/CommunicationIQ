@@ -1,24 +1,28 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import {
-  Check, Ear, Flame, Play, RotateCcw, Volume2, X, Zap,
+  Check, Ear, Flame, Loader2, Play, RotateCcw, Square, X, Zap,
 } from "lucide-react";
 import { AiNarrator } from "@/components/brand/AiNarrator";
 import { VoicePicker } from "@/components/VoicePicker";
 import { RequireAuth } from "@/components/RequireAuth";
-import { StepGuide } from "@/components/StepGuide";
 import { useToast } from "@/components/Toast";
-import { ChoiceOption,
-  Badge, EmptyState, ErrorNote, GapMeter, PageHeader, Section, Skeleton,
+import {
+  ChoiceOption, ErrorNote, PageHeader, Section,
 } from "@/components/ui";
-import { speak } from "@/lib/audio";import { ApiError, listeningApi,
-  type ListeningPassageRow, type ListeningQuestion,
+import { speak } from "@/lib/audio";
+import {
+  ApiError, API_BASE, listeningApi,
+  type ListeningQuestion,
   type ListeningResult, type ListeningStart,
 } from "@/lib/api";
-import { useData } from "@/lib/useData";
 import { FullscreenPrompt } from "@/components/FullscreenPrompt";
+import { FullscreenGuard } from "@/components/FullscreenGuard";
+import { LevelSelect, type DifficultyLevel } from "@/components/LevelSelect";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
+import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
+import { markAttempted } from "@/lib/setTracker";
 
 export default function ListeningPage() {
   return (
@@ -28,28 +32,16 @@ export default function ListeningPage() {
   );
 }
 
-type Stage = "intro" | "browse" | "listen" | "answer" | "marked";
+type Stage = "intro" | "select" | "loading" | "listen" | "answer" | "marked";
 
 const KIND_LABEL: Record<string, string> = {
-  announcement: "Announcement",
-  instructions: "Instructions",
-  short_talk: "Short talk",
-  conversation: "Conversation",
-  voicemail: "Voicemail",
+  announcement: "Announcement", instructions: "Instructions",
+  short_talk: "Short talk", conversation: "Conversation", voicemail: "Voicemail",
 };
 
-/** Listening practice.
- *
- *  The order is the design: audio first, questions afterwards. Showing the
- *  questions during playback would let a student listen for four specific
- *  facts instead of following the passage, which measures scanning rather
- *  than comprehension — and it is not what any real round does.
- */
 function Listening() {
   const { toast } = useToast();
-  const { data, loading, error, reload } = useData(() => listeningApi.passages());
   const proctoring = useProctoring();
-
   const [stage, setStage] = useState<Stage>("intro");
   const [session, setSession] = useState<ListeningStart | null>(null);
   const [questions, setQuestions] = useState<ListeningQuestion[]>([]);
@@ -59,8 +51,10 @@ function Listening() {
   const [result, setResult] = useState<ListeningResult | null>(null);
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>("");
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
 
-  // Speech synthesis keeps talking after a route change unless it is stopped.
   const cancelSpeech = useCallback(() => {
     if (typeof window !== "undefined" && window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -68,11 +62,13 @@ function Listening() {
   }, []);
   useEffect(() => cancelSpeech, [cancelSpeech]);
 
-  async function begin(passage: ListeningPassageRow) {
-    setProblem("");
+  // Auto-start: fetch a random listening passage with questions
+  async function autoStart() {
+    setStage("loading");
     setBusy(true);
     try {
-      const started = await listeningApi.start(passage.id);
+      const started = await listeningApi.random();
+      markAttempted("listening", started.passage_id);
       setSession(started);
       setQuestions([]);
       setAnswers({});
@@ -80,7 +76,9 @@ function Listening() {
       setResult(null);
       setStage("listen");
     } catch (err) {
-      setProblem(err instanceof ApiError ? err.detail : "Could not start that passage");
+      setProblem(err instanceof ApiError ? err.detail : "No listening passages with questions available yet.");
+      toast("error", err instanceof ApiError ? err.detail : "No passages available");
+      setStage("intro");
     } finally {
       setBusy(false);
     }
@@ -90,8 +88,32 @@ function Listening() {
     if (!session || playing) return;
     setPlaying(true);
     setPlaysUsed((n) => n + 1);
-    await speak(session.transcript, session.accent);
-    setPlaying(false);
+    if (session.audio_key) {
+      const url = `${API_BASE.replace('/api/v1', '')}/media/${session.audio_key}`;
+      const audio = new Audio(url);
+      setAudioEl(audio);
+      audio.onended = () => { setPlaying(false); setAudioPlaying(false); setAudioEl(null); };
+      audio.onerror = () => { setPlaying(false); setAudioPlaying(false); setAudioEl(null); };
+      audio.play().then(() => setAudioPlaying(true)).catch(() => setPlaying(false));
+    } else {
+      await speak(session.transcript, session.accent);
+      setPlaying(false);
+    }
+  }
+
+  function stopAudio() {
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.currentTime = 0;
+      setAudioPlaying(false);
+      setPlaying(false);
+      setAudioEl(null);
+    } else {
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      setPlaying(false);
+    }
   }
 
   async function toQuestions() {
@@ -121,8 +143,9 @@ function Listening() {
         plays_used: Math.max(1, playsUsed),
       }));
       toast("success", "Answers submitted successfully");
+      proctoring.stopCamera();
+      cancelSpeech();
       setStage("marked");
-      reload();
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not submit";
       setProblem(msg);
@@ -132,41 +155,38 @@ function Listening() {
     }
   }
 
-  function backToList() {
-    cancelSpeech();
-    setStage("browse");
-    setSession(null);
-    setResult(null);
-  }
-
-  // Auto-start with a random passage after fullscreen prompt
-  useEffect(() => {
-    if (data && data.length > 0 && stage === "browse" && !session && !busy) {
-      setBusy(true);
-      const random = data[Math.floor(Math.random() * data.length)];
-      begin(random);
-    }
-  }, [data, stage, session, busy]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Request camera when practice starts
   useEffect(() => {
-    if (stage !== "intro" && !proctoring.state.cameraActive) {
+    if (stage !== "intro" && stage !== "loading" && !proctoring.state.cameraActive) {
       proctoring.requestCamera();
     }
   }, [stage]);
 
   if (stage === "intro") {
-    return <FullscreenPrompt onStart={() => setStage("browse")} />;
+    return <LevelSelect skill="listening" onSelect={(level) => { setDifficulty(level); setStage("select"); }} />;
   }
 
-  if (loading) return <Skeleton rows={5} />;
-  if (error) return <ErrorNote message={error} />;
+  if (stage === "select") {
+    return <FullscreenPrompt onStart={autoStart} />;
+  }
+
+  if (stage === "loading") {
+    return (
+      <>
+        <PageHeader title="Listening" sub="Loading passage…" />
+        <div className="ds-card p-8 flex items-center justify-center gap-3">
+          <Loader2 size={18} className="animate-spin text-muted" />
+          <span className="text-xs text-muted">Selecting a random passage…</span>
+        </div>
+      </>
+    );
+  }
 
   // ---------------------------------------------------------------- listen --
   if (stage === "listen" && session) {
     const playsLeft = session.plays_allowed - playsUsed;
     return (
-      <>
+      <FullscreenGuard>
         <CameraPreview
           videoRef={proctoring.videoRef}
           faceCount={proctoring.state.faceCount}
@@ -179,9 +199,6 @@ function Listening() {
         />
         <Section>
           <div className="text-center py-6">
-            {/* The AI presenter reading the passage. It comes alive while the
-                audio plays and rests between plays. Only shown as the narrator
-                for a device-read passage; a real recording gets the ear. */}
             {session.audio_key ? (
               <span className="rounded-full p-4 inline-flex mb-4"
                     style={{ background: "color-mix(in srgb, var(--primary) 12%, transparent)" }}>
@@ -192,21 +209,27 @@ function Listening() {
             )}
             <p className="text-xs text-muted max-w-md mx-auto leading-relaxed mb-1">
               You will hear this {playsLeft === session.plays_allowed ? "once" : "again"}.
-              The questions come afterwards — listen for what it is about, not
-              just for names and numbers.
+              The questions come afterwards — listen for what it is about, not just for names and numbers.
             </p>
             <p className="text-[11px] text-muted max-w-md mx-auto leading-relaxed mb-5">
               {session.audio_key
                 ? "Recorded by a person."
-                : "Read by your device's built-in voice. That is a stand-in: synthesised speech is clearer and more even than a real speaker, so this is easier than the real thing."}
+                : "Read by your device's built-in voice."}
             </p>
 
-            <button onClick={play} disabled={playing || playsUsed >= session.plays_allowed}
-                    className="btn btn-primary ds-focus">
-              {playing ? <><Volume2 size={15} /> Playing…</>
-                       : playsUsed === 0 ? <><Play size={15} /> Play the passage</>
-                       : <><RotateCcw size={15} /> Play again</>}
-            </button>
+            <div className="flex gap-2 justify-center">
+              <button onClick={play} disabled={playing || playsUsed >= session.plays_allowed}
+                      className="btn btn-primary ds-focus">
+                {playsUsed === 0 ? <><Play size={15} /> Play the passage</>
+                         : <><RotateCcw size={15} /> Play again</>}
+              </button>
+              {playing && (
+                <button onClick={stopAudio}
+                        className="btn btn-ghost ds-focus flex items-center gap-1">
+                  <Square size={13} /> Stop
+                </button>
+              )}
+            </div>
 
             <div className="text-[11px] text-muted mt-3">
               {playsUsed === 0
@@ -236,24 +259,33 @@ function Listening() {
           </div>
         </Section>
         {problem && <div className="mt-4"><ErrorNote message={problem} /></div>}
-        <button onClick={backToList} className="btn btn-ghost btn-sm ds-focus mt-4">
-          Leave this passage
-        </button>
-      </>
+      </FullscreenGuard>
     );
   }
 
   // ---------------------------------------------------------------- answer --
   if (stage === "answer" && session) {
     const answered = questions.filter((q) => answers[q.id] != null).length;
+    const questionStatuses: ExamQuestionStatus[] = questions.map((q, i) => ({
+      id: q.id, index: i + 1, answered: answers[q.id] != null, selectedOption: answers[q.id] ?? null,
+    }));
     return (
-      <>
+      <ExamSidebar
+        questions={questionStatuses}
+        currentIndex={questions.findIndex(q => answers[q.id] == null) ?? 0}
+        totalQuestions={questions.length}
+        sectionTitle="Listening Comprehension"
+        companyLabel="General"
+        collapsed={true}
+        onEndExam={() => {
+          if (confirm("Are you sure you want to end this practice?")) {
+            void submit();
+          }
+        }}
+        onNavigate={() => {}}
+      >
         <PageHeader title={session.title}
                     sub="Choose one answer for each question, then submit." />
-
-        {/* A clear progress line — a filled pip per answered question, so a
-            student can see at a glance what is left before the submit button
-            tells them. */}
         <div className="ds-card p-3 mb-4 flex items-center gap-3">
           <div className="flex gap-1.5">
             {questions.map((q) => (
@@ -301,7 +333,7 @@ function Listening() {
                   ? `Submit — ${questions.length - answered} still unanswered`
                   : "Submit answers"}
         </button>
-      </>
+      </ExamSidebar>
     );
   }
 
@@ -313,7 +345,7 @@ function Listening() {
           title={`${result.correct} of ${result.total} correct`}
           sub={result.title}
           action={
-            <button onClick={backToList} className="btn btn-primary btn-sm ds-focus">
+            <button onClick={autoStart} className="btn btn-primary btn-sm ds-focus">
               Another passage
             </button>
           }
@@ -328,7 +360,7 @@ function Listening() {
               {result.score}
             </div>
             <div className="text-[11px] text-muted mt-1">
-              out of 80 · {result.band}
+              out of 100 · {result.band}
             </div>
           </div>
           <div className="ds-card p-4 sm:col-span-2 flex items-center gap-4 flex-wrap">
@@ -362,9 +394,7 @@ function Listening() {
                     {!row.is_correct && (
                       <div className="text-[11px] text-muted mt-1">
                         You chose:{" "}
-                        {row.selected_index != null
-                          ? row.options[row.selected_index]
-                          : "nothing"}
+                        {row.selected_index != null ? row.options[row.selected_index] : "nothing"}
                         {" · "}Answer: {row.options[row.correct_index]}
                       </div>
                     )}
@@ -378,8 +408,6 @@ function Listening() {
           </div>
         </Section>
 
-        {/* Released only now. Reading it before would have made this a reading
-            test, which is why the server withholds it until submission. */}
         <Section title="What was said">
           <p className="text-xs text-muted leading-relaxed whitespace-pre-line">
             {result.transcript}
@@ -389,68 +417,5 @@ function Listening() {
     );
   }
 
-  // ---------------------------------------------------------------- browse --
-  return (
-    <>
-      <PageHeader
-        title="Listening"
-        sub="Hear a passage once, then answer questions about it — the way a placement round does it."
-      />
-
-      <StepGuide
-        active={1}
-        steps={[
-          { label: "Pick a passage", detail: "Each one says what kind of audio it is." },
-          { label: "Listen carefully", detail: "It plays a limited number of times — no pausing." },
-          { label: "Answer the questions", detail: "They appear only after the audio ends." },
-          { label: "See your marks", detail: "Every answer explained, right after you submit." },
-        ]}
-      />
-
-      {problem && <div className="mb-4"><ErrorNote message={problem} /></div>}
-
-      {!data || data.length === 0 ? (
-        <EmptyState icon={Ear} title="No passages yet"
-                    desc="The listening bank is empty for this institution." />
-      ) : (
-        <div className="grid md:grid-cols-2 gap-3">
-          {data.map((p) => (
-            <button key={p.id} onClick={() => begin(p)} disabled={busy}
-                    className="ds-card p-4 text-left hover:bg-surface2 transition-colors ds-focus">
-              <div className="flex items-start justify-between gap-2">
-                <div className="text-sm font-bold">{p.title}</div>
-                {p.best_score != null && (
-                  <Badge tone="var(--rag-green)">best {p.best_score}</Badge>
-                )}
-              </div>
-              <div className="text-[11px] text-muted mt-1">
-                {KIND_LABEL[p.kind] ?? p.kind} · about {p.approx_seconds}s ·{" "}
-                {p.question_count} questions ·{" "}
-                {p.plays_allowed === 1 ? "one play" : `${p.plays_allowed} plays`}
-              </div>
-              {p.best_score != null && (
-                <div className="mt-2.5"><GapMeter percent={((p.best_score - 20) / 60) * 100} /></div>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <Section title="What this measures, and what it does not" className="mt-4">
-        <p className="text-xs text-muted leading-relaxed">
-          Comprehension: following a passage and answering about what it meant,
-          not which words appeared in it. Wrong options are drawn from the
-          passage on purpose, so catching keywords without following the sense
-          will not get you through.
-        </p>
-        <p className="text-xs text-muted leading-relaxed mt-2">
-          The passages are read by your device&rsquo;s built-in voice rather than
-          recorded by people. Synthesised speech is clearer, more evenly paced
-          and has none of the accent variety or hesitation of a real speaker,
-          so this is easier than the real thing. Treat a good score here as a
-          floor, not a ceiling.
-        </p>
-      </Section>
-    </>
-  );
+  return null;
 }

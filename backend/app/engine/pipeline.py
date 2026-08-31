@@ -38,8 +38,8 @@ from app.models.tenant import (Attempt, FeatureRecord, ProfileSection,
 
 log = logging.getLogger(__name__)
 
-SCALE_MIN = 20.0
-SCALE_MAX = 80.0
+SCALE_MIN = 0.0
+SCALE_MAX = 100.0
 
 # How the overall number is composed. Only dimensions that were actually
 # measured take part, and the weights are renormalised over those — so an
@@ -821,11 +821,11 @@ def quality_verdict(audio: ResponseAudio) -> str:
 
 
 def band_label(score: float) -> str:
-    if score >= 65:
+    if score >= 75:
         return "Strong"
-    if score >= 51:
+    if score >= 50:
         return "Competent"
-    if score >= 36:
+    if score >= 25:
         return "Developing"
     return "Beginning"
 

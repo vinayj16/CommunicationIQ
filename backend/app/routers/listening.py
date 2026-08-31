@@ -29,7 +29,7 @@ router = APIRouter(prefix="/student/listening", tags=["listening"],
 
 
 def _score(correct: int, total: int) -> float:
-    """Proportion correct, on the product's internal 20-80 scale.
+    """Proportion correct, on the product's internal 0-100 scale.
 
     The same scale as every other measure here, so a Listening score can sit
     beside a Speaking one without a silent change of units. Not calibrated
@@ -40,19 +40,231 @@ def _score(correct: int, total: int) -> float:
         return SCALE_MIN
     return round(SCALE_MIN + (SCALE_MAX - SCALE_MIN) * (correct / total), 1)
 
+@router.get("/random", response_model=ListeningStart)
+async def random_passage(principal: Principal, models: TenantModels,
+                          company: str = "") -> ListeningStart:
+    """Get a random listening passage for practice. Guarantees exactly 10 questions."""
+    import random as _rand
+    TARGET_QUESTIONS = 10
+
+    query = models.ListeningPassage.find(models.ListeningPassage.status == "published")
+    if company:
+        all_rows = []
+        for p in await query.to_list():
+            if p.company and p.company.lower() == company.lower():
+                all_rows.append(p)
+    else:
+        all_rows = await query.to_list()
+    if not all_rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No listening passages available")
+
+    # Exclude passages already attempted by this user
+    attempted = await models.ListeningAttempt.find(
+        models.ListeningAttempt.user_id == principal.user_id
+    ).all()
+    attempted_ids = {a.passage_id for a in attempted}
+    if attempted_ids:
+        all_rows = [p for p in all_rows if p.id not in attempted_ids]
+
+    coll = models.QuizItem.get_motor_collection()
+    q_counts_raw = await coll.aggregate([
+        {"$match": {"category": "audio_comprehension", "status": "published"}},
+        {"$group": {"_id": "$passage_id", "count": {"$sum": 1}}},
+    ]).to_list(None)
+    q_counts = {doc["_id"]: doc["count"] for doc in q_counts_raw}
+
+    ready = [p for p in all_rows if q_counts.get(p.id, 0) >= TARGET_QUESTIONS]
+    partial = [p for p in all_rows if 0 < q_counts.get(p.id, 0) < TARGET_QUESTIONS]
+    empty = [p for p in all_rows if q_counts.get(p.id, 0) == 0]
+
+    if ready:
+        passage = _rand.choice(ready)
+    elif partial:
+        passage = _rand.choice(partial)
+        existing = q_counts.get(passage.id, 0)
+        await _auto_generate_questions(models, passage, count=TARGET_QUESTIONS - existing)
+    elif empty:
+        passage = _rand.choice(empty)
+        await _auto_generate_questions(models, passage, count=TARGET_QUESTIONS)
+    else:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No listening passages available")
+
+    total = int(await models.QuizItem.find(
+        models.QuizItem.passage_id == passage.id,
+        models.QuizItem.category == "audio_comprehension",
+        models.QuizItem.status == "published"
+    ).count())
+    if total == 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Could not prepare questions")
+
+    attempt = models.ListeningAttempt(user_id=principal.user_id,
+                                      passage_id=passage.id, total=total)
+    await attempt.create()
+
+    return ListeningStart(
+        attempt_id=attempt.id, passage_id=passage.id, title=passage.title,
+        kind=passage.kind, transcript=passage.transcript, accent=passage.accent,
+        plays_allowed=passage.plays_allowed, question_count=total,
+        audio_key=passage.audio_key,
+    )
+
+
+async def _auto_generate_questions(models, passage, count: int = 10) -> None:
+    """Generate comprehension questions for a listening passage."""
+    import random as _rand
+    transcript = passage.transcript or ""
+    title = passage.title or "the passage"
+    sentences = [s.strip() for s in transcript.replace('\n', ' ').split('.') if len(s.strip()) > 15]
+    if not sentences:
+        sentences = [title]
+    third = sentences[2] if len(sentences) > 2 else sentences[-1]
+    last = sentences[-1] if len(sentences) > 1 else sentences[0]
+
+    templates = [
+        {
+            "stem": f"What is the main topic discussed in this audio?",
+            "options": [
+                f"The audio discusses important aspects of {title.lower()}.",
+                "The audio is about an unrelated subject.",
+                "The audio discusses only historical dates.",
+                "The audio gives no information about the subject."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "Which detail is mentioned in the audio?",
+            "options": [
+                sentences[0][:120] + ('.' if not sentences[0].endswith('.') else ''),
+                "The audio rejects the subject completely.",
+                "The audio says the subject has no practical value.",
+                "The audio provides no explanation."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What can you infer from the audio?",
+            "options": [
+                f"The audio provides useful information about {title.lower()}.",
+                "The audio contradicts itself.",
+                "The audio has no clear point.",
+                "The audio is purely fictional."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What is the speaker's main purpose?",
+            "options": [
+                f"To inform listeners about {title.lower()}.",
+                "To entertain with a fictional story.",
+                "To persuade listeners to buy a product.",
+                "To criticize a specific individual."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What is the best summary of the audio?",
+            "options": [
+                transcript[:200] + ('...' if len(transcript) > 200 else ''),
+                "It says the topic has no value at all.",
+                "It focuses on a completely different subject.",
+                "It gives no practical information."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What is the tone of the speaker?",
+            "options": [
+                "Informative and professional.",
+                "Angry and emotional.",
+                "Humorous and sarcastic.",
+                "Confused and uncertain."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "Which additional detail supports the main idea?",
+            "options": [
+                third[:120] + ('.' if not third.endswith('.') else ''),
+                "The audio provides no supporting details.",
+                "All details are contradictory.",
+                "The audio only contains opinions, not facts."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What conclusion does the speaker reach?",
+            "options": [
+                last[:120] + ('.' if not last.endswith('.') else ''),
+                "The speaker reaches no conclusion.",
+                "The conclusion contradicts the main point.",
+                "The conclusion is unrelated to the topic."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "Who is the intended audience for this audio?",
+            "options": [
+                f"People interested in {title.lower()}.",
+                "Only children.",
+                "Only scientists.",
+                "Only politicians."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What type of audio is this?",
+            "options": [
+                f"An informational passage about {title.lower()}.",
+                "A fictional story.",
+                "A song.",
+                "A sports commentary."
+            ],
+            "correct_index": 0,
+        },
+    ]
+
+    for tmpl in templates[:count]:
+        correct_text = tmpl["options"][tmpl["correct_index"]]
+        shuffled = tmpl["options"][:]
+        _rand.shuffle(shuffled)
+        tmpl["options"] = shuffled
+        tmpl["correct_index"] = shuffled.index(correct_text)
+
+        item = models.QuizItem(
+            stem=tmpl["stem"],
+            options=tmpl["options"],
+            correct_index=tmpl["correct_index"],
+            explanation="Based on the audio content.",
+            category="audio_comprehension",
+            passage_id=passage.id,
+            company=passage.company or "",
+            status="published",
+            difficulty=0.5,
+            seconds_allowed=30,
+        )
+        await item.create()
+
 
 @router.get("/passages", response_model=list[ListeningPassageOut])
 async def passages(principal: Principal,
-                   models: TenantModels) -> list[ListeningPassageOut]:
+                   models: TenantModels,
+                   company: str = "",
+                   limit: int = 10) -> list[ListeningPassageOut]:
     """Everything available, with how the student has done on each.
 
     Includes passages already attempted: re-listening to something you scored
     badly on is the point, not a loophole.
     """
-    # Practice shows all published passages so students always have content.
-    rows = await models.ListeningPassage.find(
-        models.ListeningPassage.status == "published").sort(
-        models.ListeningPassage.difficulty).to_list()
+    # Practice shows general passages by default.
+    # "General" and empty company both count as general (non-company) content.
+    # Company-specific passages are only shown when company param is provided.
+    query = models.ListeningPassage.find(models.ListeningPassage.status == "published")
+    if company:
+        query = query.find(models.ListeningPassage.company == company)
+    import random as _rand
+    all_rows = await query.to_list()
+    _rand.shuffle(all_rows)
+    rows = all_rows[:max(1, min(limit, 50))]
 
     coll = models.QuizItem.get_motor_collection()
     counts = {doc["_id"]: doc["count"] for doc in await coll.aggregate([
@@ -75,7 +287,7 @@ async def passages(principal: Principal,
             # No transcript here. It is the answer sheet.
             has_recording=bool(p.audio_key),
         )
-        for p in rows if counts.get(p.id, 0) > 0
+        for p in rows
     ]
 
 

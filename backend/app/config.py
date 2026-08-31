@@ -168,6 +168,13 @@ class Settings(BaseSettings):
     # API has finite RAM/VRAM and will thrash past its batch capacity.
     oss_max_concurrency: int = 4
 
+    # Groq API for automatic question generation
+    groq_api_key: str = ""
+    # Whether to run automatic daily question generation
+    auto_question_generation: bool = True
+    # Hour of day (UTC) to run generation
+    question_generation_hour: int = 3
+
     @property
     def media_path(self) -> Path:
         root = Path(self.media_root)

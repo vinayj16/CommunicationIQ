@@ -75,14 +75,236 @@ def _rate_note(wpm: int | None, correct: int, total: int) -> str:
     return (f"{wpm} words per minute is a normal working pace for this kind of "
             f"text.")
 
+@router.get("/random", response_model=ReadingStart)
+async def random_passage(principal: Principal, models: TenantModels,
+                          company: str = "") -> ReadingStart:
+    """Get a random passage for practice. Guarantees exactly 10 questions.
+
+    Finds a passage, ensures it has at least 10 linked quiz_items (generates
+    more if needed), then starts the attempt.
+    """
+    TARGET_QUESTIONS = 10
+
+    query = models.ReadingPassage.find(models.ReadingPassage.status == "published")
+    if company:
+        all_rows = []
+        for p in await query.to_list():
+            if p.company and p.company.lower() == company.lower():
+                all_rows.append(p)
+    else:
+        all_rows = await query.to_list()
+    if not all_rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No reading passages available")
+
+    # Exclude passages already attempted by this user
+    attempted = await models.ReadingAttempt.find(
+        models.ReadingAttempt.user_id == principal.user_id
+    ).all()
+    attempted_ids = {a.passage_id for a in attempted}
+    if attempted_ids:
+        all_rows = [p for p in all_rows if p.id not in attempted_ids]
+
+    # Find which passages already have enough questions
+    coll = models.QuizItem.get_motor_collection()
+    q_counts_raw = await coll.aggregate([
+        {"$match": {"category": "reading_comprehension", "status": "published"}},
+        {"$group": {"_id": "$passage_id", "count": {"$sum": 1}}},
+    ]).to_list(None)
+    q_counts = {doc["_id"]: doc["count"] for doc in q_counts_raw}
+
+    # Prefer passages that already have >=10 questions
+    ready = [p for p in all_rows if q_counts.get(p.id, 0) >= TARGET_QUESTIONS]
+    # Passages with some but not enough questions
+    partial = [p for p in all_rows if 0 < q_counts.get(p.id, 0) < TARGET_QUESTIONS]
+    # Passages with no questions at all
+    empty = [p for p in all_rows if q_counts.get(p.id, 0) == 0]
+
+    if ready:
+        passage = random.choice(ready)
+    elif partial:
+        passage = random.choice(partial)
+        # Top up to 10
+        existing = q_counts.get(passage.id, 0)
+        await _auto_generate_questions(models, passage, count=TARGET_QUESTIONS - existing)
+    elif empty:
+        passage = random.choice(empty)
+        await _auto_generate_questions(models, passage, count=TARGET_QUESTIONS)
+    else:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No reading passages available")
+
+    total = int(await models.QuizItem.find(
+        models.QuizItem.passage_id == passage.id,
+        models.QuizItem.category == "reading_comprehension",
+        models.QuizItem.status == "published"
+    ).count())
+    if total == 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Could not prepare questions for this passage")
+
+    attempt = models.ReadingAttempt(user_id=principal.user_id,
+                                    passage_id=passage.id, total=total)
+    await attempt.create()
+
+    return ReadingStart(
+        attempt_id=attempt.id, passage_id=passage.id, title=passage.title,
+        kind=passage.kind, body=passage.body, word_count=passage.word_count,
+        question_count=total,
+    )
+
+
+async def _auto_generate_questions(models, passage, count: int = 10) -> None:
+    """Generate comprehension questions for a reading passage.
+
+    Uses simple template-based generation (no external API needed).
+    Creates quiz_items with category 'reading_comprehension' linked to the passage.
+    """
+    body = passage.body or ""
+    title = passage.title or "the passage"
+    sentences = [s.strip() for s in body.replace('\n', ' ').split('.') if len(s.strip()) > 20]
+    if not sentences:
+        sentences = [title]
+    # Get 3rd sentence or last for variety
+    third = sentences[2] if len(sentences) > 2 else sentences[-1]
+    last = sentences[-1] if len(sentences) > 1 else sentences[0]
+
+    templates = [
+        {
+            "stem": f"What is the main topic of {title}?",
+            "options": [
+                f"The passage discusses important aspects of {title.lower()}.",
+                "The passage is about an unrelated subject.",
+                "The passage discusses only historical dates.",
+                "The passage gives no information about the subject."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": f"Which idea is directly supported by the passage?",
+            "options": [
+                sentences[0][:120] + ('.' if not sentences[0].endswith('.') else ''),
+                "The passage rejects the subject completely.",
+                "The passage says the subject has no practical value.",
+                "The passage provides no explanation."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "Which statement is best supported by the passage?",
+            "options": [
+                f"The passage explains important points about {title.lower()}.",
+                "The passage says no consideration is necessary.",
+                "The passage gives no practical consideration.",
+                "The topic has no limitations or conditions."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What can be inferred from the passage?",
+            "options": [
+                f"The passage provides useful information about {title.lower()}.",
+                "The passage contradicts itself.",
+                "The passage has no clear point.",
+                "The passage is purely fictional."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What is the best summary of the passage?",
+            "options": [
+                body[:200] + ('...' if len(body) > 200 else ''),
+                "It says the topic has no value at all.",
+                "It focuses on a completely different subject.",
+                "It gives no practical information."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What is the author's main argument in this passage?",
+            "options": [
+                f"The author presents a case for the importance of {title.lower()}.",
+                "The author argues against the topic entirely.",
+                "The author provides no clear argument.",
+                "The author is purely describing historical events."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "Which detail from the passage is most important?",
+            "options": [
+                third[:120] + ('.' if not third.endswith('.') else ''),
+                "The passage mentions no important details.",
+                "All details mentioned are trivial.",
+                "The passage focuses only on opinions, not facts."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What conclusion does the passage lead to?",
+            "options": [
+                last[:120] + ('.' if not last.endswith('.') else ''),
+                "The passage reaches no conclusion.",
+                "The conclusion contradicts the passage.",
+                "The conclusion is unrelated to the topic."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What type of text is this passage?",
+            "options": [
+                f"A workplace text about {title.lower()}.",
+                "A fictional short story.",
+                "A poem.",
+                "A legal document."
+            ],
+            "correct_index": 0,
+        },
+        {
+            "stem": "What is the tone of this passage?",
+            "options": [
+                "Informative and professional.",
+                "Angry and emotional.",
+                "Humorous and satirical.",
+                "Confused and contradictory."
+            ],
+            "correct_index": 0,
+        },
+    ]
+
+    for tmpl in templates[:count]:
+        correct_text = tmpl["options"][tmpl["correct_index"]]
+        shuffled = tmpl["options"][:]
+        random.shuffle(shuffled)
+        tmpl["options"] = shuffled
+        tmpl["correct_index"] = shuffled.index(correct_text)
+
+        item = models.QuizItem(
+            stem=tmpl["stem"],
+            options=tmpl["options"],
+            correct_index=tmpl["correct_index"],
+            explanation="Based on the passage content.",
+            category="reading_comprehension",
+            passage_id=passage.id,
+            company=passage.company or "",
+            status="published",
+            difficulty=0.5,
+            seconds_allowed=30,
+        )
+        await item.create()
+
 
 @router.get("/passages", response_model=list[ReadingPassageOut])
 async def passages(principal: Principal,
-                   models: TenantModels) -> list[ReadingPassageOut]:
-    # Practice shows all published passages so students always have content.
-    rows = await models.ReadingPassage.find(
-        models.ReadingPassage.status == "published").sort(
-        models.ReadingPassage.difficulty).to_list()
+                   models: TenantModels,
+                   company: str = "",
+                   limit: int = 10) -> list[ReadingPassageOut]:
+    # Practice shows general passages by default.
+    # "General" and empty company both count as general (non-company) content.
+    # Company-specific passages are only shown when company param is provided.
+    query = models.ReadingPassage.find(models.ReadingPassage.status == "published")
+    if company:
+        query = query.find(models.ReadingPassage.company == company)
+    all_rows = await query.to_list()
+    random.shuffle(all_rows)
+    rows = all_rows[:max(1, min(limit, 50))]
 
     coll = models.QuizItem.get_motor_collection()
     counts = {doc["_id"]: doc["count"] for doc in await coll.aggregate([
@@ -103,7 +325,7 @@ async def passages(principal: Principal,
             best_score=best.get(p.id),
             # The body is not here. It is the thing being timed.
         )
-        for p in rows if counts.get(p.id, 0) > 0
+        for p in rows
     ]
 
 

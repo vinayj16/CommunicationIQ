@@ -1,19 +1,22 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle, Check, ChevronRight, Loader2, RotateCcw, X, Zap,
+  AlertCircle, Check, ChevronRight, Loader2, RotateCcw, Zap,
 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { useToast } from "@/components/Toast";
 import {
-  Badge, EmptyState, ErrorNote, PageHeader, Section,
+  ErrorNote, PageHeader, Section,
 } from "@/components/ui";
 import {
   ApiError, practiceApi, type QuizItem, type QuizResult,
 } from "@/lib/api";
 import { FullscreenPrompt } from "@/components/FullscreenPrompt";
+import { FullscreenGuard } from "@/components/FullscreenGuard";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
+import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
+import { markAttempted } from "@/lib/setTracker";
 
 export default function QuizPage() {
   return (
@@ -23,15 +26,8 @@ export default function QuizPage() {
   );
 }
 
-type Stage = "intro" | "idle" | "loading" | "playing" | "marked";
+type Stage = "intro" | "select" | "loading" | "playing" | "marked";
 
-/** The fast loop (QUIZ-01/03).
- *
- *  Three minutes, one item at a time, with a per-item clock — the time
- *  pressure is the point, because it is what fails people in the real MCQ
- *  sections. Running out of time answers the item as unanswered rather than
- *  wrong; those are different facts and the report keeps them apart.
- */
 function Quiz() {
   const { toast } = useToast();
   const proctoring = useProctoring();
@@ -42,20 +38,23 @@ function Quiz() {
   const [seconds, setSeconds] = useState(0);
   const [result, setResult] = useState<QuizResult | null>(null);
   const [error, setError] = useState("");
+  const [showInstructions, setShowInstructions] = useState(false);
+  const [difficulty, setDifficulty] = useState<string>("");
 
   const item = items[index];
 
-  async function start() {
+  async function autoStart() {
     setStage("loading");
     setError("");
     setResult(null);
     setAnswers({});
     setIndex(0);
     try {
-      const next = await practiceApi.nextQuiz(10);
+      // Fetch 10 random quiz items with optional difficulty filter
+      const next = await practiceApi.nextQuiz(10, "", difficulty || undefined);
       if (!next.length) {
         setError("No quiz items have been published for your institution yet.");
-        setStage("idle");
+        setStage("intro");
         return;
       }
       setItems(next);
@@ -65,27 +64,16 @@ function Quiz() {
       const msg = err instanceof ApiError ? err.detail : "Could not load a quiz";
       setError(msg);
       toast("error", msg);
-      setStage("idle");
+      setStage("intro");
     }
   }
-
-  // Auto-start quiz after fullscreen prompt
-  useEffect(() => {
-    if (stage === "idle") {
-      void start();
-    }
-  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Request camera when quiz starts
   useEffect(() => {
-    if (stage !== "intro" && !proctoring.state.cameraActive) {
+    if (stage !== "intro" && stage !== "loading" && !proctoring.state.cameraActive) {
       proctoring.requestCamera();
     }
   }, [stage]);
-
-  if (stage === "intro") {
-    return <FullscreenPrompt onStart={() => setStage("idle")} />;
-  }
 
   // The shot clock. Running out is an unanswered item, not a wrong one.
   useEffect(() => {
@@ -98,6 +86,63 @@ function Quiz() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, seconds, index]);
+
+  if (stage === "intro") {
+    return <FullscreenPrompt onStart={() => setStage("select")} />;
+  }
+
+  // Difficulty selection screen
+  if (stage === "select") {
+    return (
+      <>
+        <PageHeader
+          title="Quiz"
+          sub="Grammar, vocabulary and error-spotting — 10 items at a time."
+        />
+        {error && <div className="mb-4"><ErrorNote message={error} /></div>}
+        <div className="ds-card p-6 mb-4">
+          <div className="text-sm font-bold mb-3">Choose difficulty level</div>
+          <div className="flex gap-3 mb-4">
+            {[{"value": "", "label": "All Levels", "color": "var(--primary)"},
+              {"value": "easy", "label": "Easy", "color": "var(--rag-green)"},
+              {"value": "medium", "label": "Medium", "color": "var(--rag-amber)"},
+              {"value": "hard", "label": "Hard", "color": "var(--rag-red)"}
+            ].map((d) => (
+              <button key={d.value} onClick={() => setDifficulty(d.value)}
+                className={`px-4 py-2 text-sm font-semibold rounded-lg transition-colors ds-focus ${difficulty === d.value ? "text-white" : "text-muted hover:text-text"}`}
+                style={{ background: difficulty === d.value ? d.color : "var(--surface-2)" }}>
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <div className="text-xs text-muted mb-4">
+            10 questions · about 3 minutes · timer per question
+          </div>
+          <div className="flex gap-3">
+            <button onClick={() => void autoStart()}
+              className="btn btn-primary ds-focus flex-1">
+              Start Quiz
+            </button>
+            <button onClick={() => setShowInstructions(!showInstructions)}
+              className="btn btn-ghost ds-focus">
+              Instructions
+            </button>
+          </div>
+        </div>
+        {showInstructions && (
+          <div className="ds-card p-4 text-xs text-muted leading-relaxed">
+            <ul className="space-y-1.5">
+              <li>• Limited time per question (shown in the timer)</li>
+              <li>• Select one option (A, B, C, D) to answer</li>
+              <li>• Once you answer, you cannot go back</li>
+              <li>• Skipping counts as unanswered</li>
+              <li>• Score shown at the end with explanations</li>
+            </ul>
+          </div>
+        )}
+      </>
+    );
+  }
 
   function answer(choice: number | null) {
     if (!item) return;
@@ -112,23 +157,42 @@ function Quiz() {
     }
   }
 
+  function navigateForward(newIndex: number) {
+    if (newIndex > index && newIndex < items.length) {
+      setIndex(newIndex);
+      setSeconds(items[newIndex].seconds_allowed);
+    }
+  }
+
   async function submit(final: Record<string, number | null>) {
     setStage("loading");
     try {
       setResult(await practiceApi.submitQuiz(
         items.map((i) => ({ item_id: i.id, selected_index: final[i.id] ?? null }))));
+      // Mark all items as attempted to prevent duplicates
+      for (const i of items) {
+        markAttempted("quiz", i.id);
+      }
       toast("success", "Quiz submitted successfully");
+      proctoring.stopCamera();
       setStage("marked");
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not mark the quiz";
       setError(msg);
       toast("error", msg);
-      setStage("idle");
+      setStage("intro");
     }
   }
 
   const progress = useMemo(
     () => (items.length ? (index / items.length) * 100 : 0), [index, items.length]);
+
+  const questionStatuses: ExamQuestionStatus[] = useMemo(() =>
+    items.map((q, i) => ({
+      id: q.id, index: i + 1, answered: answers[q.id] != null, selectedOption: answers[q.id] ?? null,
+    })),
+    [items, answers]
+  );
 
   if (stage === "loading") {
     return (
@@ -136,46 +200,81 @@ function Quiz() {
         <PageHeader title="Quiz" />
         <div className="ds-card p-8 flex items-center justify-center gap-3">
           <Loader2 size={18} className="animate-spin text-muted" />
-          <span className="text-xs text-muted">One moment…</span>
+          <span className="text-xs text-muted">Loading questions…</span>
         </div>
       </>
     );
   }
 
   if (stage === "marked" && result) {
-    return <Marked result={result} onAgain={start} />;
+    return <Marked result={result} onAgain={autoStart} />;
   }
 
   if (stage === "playing" && item) {
+    const isCompany = item.company && item.company.length > 0;
+    const companyLabel = isCompany ? `Company: ${item.company}` : "General";
+
     return (
-      <>
+      <FullscreenGuard>
+      <ExamSidebar
+        questions={questionStatuses}
+        currentIndex={index}
+        totalQuestions={items.length}
+        sectionTitle="Quiz"
+        companyLabel={companyLabel}
+        timeRemaining={`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`}
+        totalSecondsRemaining={seconds}
+        onNavigate={navigateForward}
+        collapsed={true}
+        onEndExam={() => {
+          if (confirm("Are you sure you want to end this quiz?")) {
+            void submit(answers);
+          }
+        }}
+        showInstructions={showInstructions}
+        onToggleInstructions={() => setShowInstructions(!showInstructions)}
+        instructions="You have limited time per question. Answer each question by selecting one option. Once you answer, you cannot go back."
+      >
         <CameraPreview
           videoRef={proctoring.videoRef}
           faceCount={proctoring.state.faceCount}
           strikes={proctoring.state.strikes}
           isFocused={proctoring.state.isFocused}
         />
+
+        {/* Question header */}
         <div className="flex items-center gap-3 mb-4">
           <span className="text-[11px] font-bold uppercase tracking-wider text-muted">
+            Question {index + 1} of {items.length}
+          </span>
+          <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full"
+                style={{
+                  background: isCompany
+                    ? "color-mix(in srgb, var(--secondary) 14%, transparent)"
+                    : "color-mix(in srgb, var(--primary) 14%, transparent)",
+                  color: isCompany ? "var(--secondary)" : "var(--primary)",
+                }}>
             {item.category.replace(/_/g, " ")}
           </span>
-          {item.is_review && <Badge tone="var(--secondary)">from your mistakes</Badge>}
+          {item.is_review && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "color-mix(in srgb, var(--secondary) 14%, transparent)", color: "var(--secondary)" }}>from your mistakes</span>}
           <div className="flex-1" />
-          <span className="text-[11px] text-muted">{index + 1} of {items.length}</span>
           <span className={`text-sm font-bold tabular-nums ${
             seconds <= 5 ? "countdown-critical" : seconds <= 10 ? "countdown-warn" : ""}`}>
             {seconds}s
           </span>
         </div>
 
+        {/* Progress bar */}
         <div className="ds-track mb-5">
           <div className="ds-fill" style={{ width: `${progress}%` }} />
         </div>
 
+        {/* Question content */}
         <Section className="mb-4">
           <p className="text-base font-semibold leading-relaxed">{item.stem}</p>
         </Section>
 
+        {/* Answer options */}
         <div className="space-y-2">
           {item.options.map((option, i) => (
             <button
@@ -190,38 +289,23 @@ function Quiz() {
           ))}
         </div>
 
-        <button onClick={() => answer(null)} className="btn btn-ghost btn-sm mt-4 ds-focus">
-          Skip this one
-        </button>
-      </>
+        {/* Navigation buttons */}
+        <div className="flex items-center justify-between mt-6 pt-4 border-t border-border">
+          <button onClick={() => answer(null)} className="btn btn-ghost btn-sm ds-focus">
+            Skip this one
+          </button>
+          <div className="text-[10px] text-muted">
+            {index + 1 < items.length
+              ? "Answer to proceed to next question"
+              : "Answer to submit quiz"}
+          </div>
+        </div>
+      </ExamSidebar>
+      </FullscreenGuard>
     );
   }
 
-  return (
-    <>
-      <PageHeader
-        title="Quiz"
-        sub="Grammar, vocabulary and error-spotting under a clock — three minutes, ten items. For the days a full speaking drill is not going to happen."
-      />
-
-      {error && <div className="mb-4"><ErrorNote message={error} /></div>}
-
-      <Section className="mb-4">
-        <EmptyState
-          icon={Zap}
-          title="Ten items, about three minutes"
-          desc="Anything you get wrong goes into your mistake bank and comes back later, spaced out, until you have it."
-          action={<button onClick={start} className="btn btn-primary ds-focus">Start</button>}
-        />
-      </Section>
-
-      <div className="ds-card p-4 text-xs text-muted leading-relaxed">
-        Quiz XP is capped as a share of your week. That is deliberate: quizzes are
-        a way to keep going on a bad day, not a way to level up without ever
-        speaking. Your first quiz each week always counts in full.
-      </div>
-    </>
-  );
+  return null;
 }
 
 function Marked({ result, onAgain }: { result: QuizResult; onAgain: () => void }) {
@@ -232,7 +316,7 @@ function Marked({ result, onAgain }: { result: QuizResult; onAgain: () => void }
         sub={`${Math.round(result.accuracy * 100)}% this round`}
         action={
           <button onClick={onAgain} className="btn btn-primary btn-sm ds-focus">
-            <RotateCcw size={13} /> Another
+            <RotateCcw size={13} /> Another quiz
           </button>
         }
       />
@@ -280,7 +364,7 @@ function Marked({ result, onAgain }: { result: QuizResult; onAgain: () => void }
               <div className="flex items-start gap-2">
                 {row.is_correct
                   ? <Check size={14} className="shrink-0 mt-0.5" style={{ color: "var(--rag-green)" }} />
-                  : <X size={14} className="shrink-0 mt-0.5" style={{ color: "var(--rag-red)" }} />}
+                  : <AlertCircle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--rag-red)" }} />}
                 <div className="flex-1">
                   <div className="text-xs font-medium">{row.stem}</div>
                   <div className="text-[11px] mt-1.5">

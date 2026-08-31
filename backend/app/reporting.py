@@ -447,7 +447,7 @@ def evidence_index(responses: list[dict]) -> dict[str, list[dict]]:
 # the same treatment the vendor-format presentation already gets: shown, named
 # for what it is, and never allowed to stand in for the number we can defend.
 #
-# The boundaries come from where the internal 20-80 scale was built to sit
+# The boundaries come from where the internal 0-100 scale was built to sit
 # against placement expectations, not from a mapping study. B1 begins at the
 # point the report already calls "close, with work to do", and B2 at the point
 # it calls "about where a placement round expects you to be", because those

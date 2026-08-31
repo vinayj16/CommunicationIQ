@@ -44,20 +44,40 @@ async def _best_scores(models, user_id: str) -> dict[str, float]:
     ])
     return {doc["_id"]: doc["max"] async for doc in cursor}
 
-
 @router.get("/prompts", response_model=list[WritingPromptOut])
 async def prompts(principal: Principal,
-                  models: TenantModels) -> list[WritingPromptOut]:
-    # Practice shows all published prompts so students always have content.
-    rows = await models.WritingPrompt.find(
-        models.WritingPrompt.status == "published").sort(
-        models.WritingPrompt.difficulty).to_list()
+                  models: TenantModels,
+                  company: str = "",
+                  limit: int = 10) -> list[WritingPromptOut]:
+    # Practice shows general prompts by default.
+    # "General" and empty company both count as general (non-company) content.
+    # Company-specific prompts are only shown when company param is provided.
+    query = models.WritingPrompt.find(models.WritingPrompt.status == "published")
+    if company:
+        all_rows = []
+        for p in await query.to_list():
+            if p.company and p.company.lower() == company.lower():
+                all_rows.append(p)
+    else:
+        all_rows = await query.to_list()
+    import random as _rand
+    _rand.shuffle(all_rows)
+
+    # Exclude prompts already submitted by this user
+    attempted = await models.WritingSubmissionRow.find(
+        models.WritingSubmissionRow.user_id == principal.user_id
+    ).all()
+    attempted_ids = {a.prompt_id for a in attempted}
+    if attempted_ids:
+        all_rows = [p for p in all_rows if p.id not in attempted_ids]
+
+    rows = all_rows[:max(1, min(limit, 10))]
 
     best = await _best_scores(models, principal.user_id)
 
     return [
         WritingPromptOut(
-            id=p.id, title=p.title, kind=p.kind, scenario=p.scenario,
+            id=p.id, title=p.title, kind=p.kind, company=getattr(p, 'company', ''), scenario=p.scenario,
             prompt=p.prompt, min_words=p.min_words,
             suggested_minutes=p.suggested_minutes,
             key_points=[_label(point) for point in (p.key_points or [])],

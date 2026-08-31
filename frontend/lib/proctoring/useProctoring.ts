@@ -109,6 +109,14 @@ export function useProctoring() {
       if (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "J" || e.key === "C")) {
         addEvent("devtools_open", "medium", `Ctrl+Shift+${e.key}`);
       }
+      // Copy detection (Ctrl+C)
+      if (e.ctrlKey && e.key === "c" && !window.getSelection()?.toString()) {
+        addEvent("clipboard_copy", "medium", "Copy attempt detected");
+      }
+      // Cut detection (Ctrl+X)
+      if (e.ctrlKey && e.key === "x") {
+        addEvent("clipboard_cut", "medium", "Cut attempt detected");
+      }
     };
 
     const onContext = (e: MouseEvent) => {
@@ -117,17 +125,23 @@ export function useProctoring() {
     };
 
     const onPaste = () => {
-      addEvent("clipboard_paste", "medium", "Paste detected");
+      addEvent("clipboard_paste", "high", "Paste detected during exam");
+    };
+
+    const onCopy = () => {
+      addEvent("clipboard_copy", "medium", "Copy operation detected");
     };
 
     document.addEventListener("keydown", onKey);
     document.addEventListener("contextmenu", onContext);
     document.addEventListener("paste", onPaste);
+    document.addEventListener("copy", onCopy);
 
     return () => {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("contextmenu", onContext);
       document.removeEventListener("paste", onPaste);
+      document.removeEventListener("copy", onCopy);
     };
   }, [addEvent]);
 
@@ -254,6 +268,35 @@ export function useProctoring() {
     document.addEventListener("mousemove", onMouseMove);
     return () => document.removeEventListener("mousemove", onMouseMove);
   }, [addEvent, state.gazeOnScreen]);
+
+  // ── Screen Recording Detection ──────────────────────────────────────────
+  useEffect(() => {
+    // Check for screen recording APIs
+    const checkScreenRecording = () => {
+      // Check if getDisplayMedia is being used (screen sharing/recording)
+      if (navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices) {
+        // Monitor for screen share events
+        const origGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
+        navigator.mediaDevices.getDisplayMedia = async function(...args) {
+          addEvent("screen_share_attempt", "high", "Screen sharing/recording attempted");
+          return origGetDisplayMedia.apply(this, args);
+        };
+      }
+    };
+
+    checkScreenRecording();
+
+    // Monitor for media device changes (external cameras, microphones)
+    if (navigator.mediaDevices && 'devicechange' in navigator.mediaDevices) {
+      const onDeviceChange = () => {
+        addEvent("device_change", "medium", "Media device change detected");
+      };
+      navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
+      return () => {
+        navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
+      };
+    }
+  }, [addEvent]);
 
   // ── Summary for submission ──────────────────────────────────────────────
   const summary = useCallback((): ProctorSummary => {
