@@ -17,24 +17,24 @@ import { VIOLATION_TYPES } from '../constants';
 
 const HEAD_ENTER = {
   horizontal: 0.35,
-  down: 0.35,
+  down: 0.5,   // loosened from 0.35 — keyboard glances tilt the head down, give this more room
   up: -0.15,
 };
 
 const HEAD_EXIT = {
   horizontal: 0.25,
-  down: 0.25,
+  down: 0.35,  // loosened from 0.25 to match HEAD_ENTER.down being loosened
   up: -0.08,
 };
 
 const GAZE_ENTER = {
   horizontal: 0.18,
-  vertical: 0.18,
+  vertical: 0.28, // loosened from 0.18 — down-gaze needs more slack for keyboard glances
 };
 
 const GAZE_EXIT = {
   horizontal: 0.12,
-  vertical: 0.12,
+  vertical: 0.2,  // loosened from 0.12 to match GAZE_ENTER.vertical being loosened
 };
 
 const SMOOTHING_ALPHA = 0.35;
@@ -221,27 +221,41 @@ export function createLookingAwayTracker() {
         }
       }
 
-      const headAwayEnter =
+      // "Down" (keyboard glance) requires BOTH head and gaze to agree before
+      // counting as away — this is the most common false-positive direction
+      // during typing-heavy exams. Left/right/up stay single-signal-triggered
+      // since those are stronger signals of genuinely looking away (second
+      // screen, notes, phone).
+      const headDown = smoothedHeadV > HEAD_ENTER.down;
+      const gazeDown = eyeGaze ? smoothedGazeV > GAZE_ENTER.vertical : false;
+      const downAwayEnter = eyeGaze ? headDown && gazeDown : headDown;
+
+      const otherHeadAwayEnter =
         Math.abs(smoothedHeadH) > HEAD_ENTER.horizontal ||
-        smoothedHeadV > HEAD_ENTER.down ||
         smoothedHeadV < HEAD_ENTER.up;
+
+      const otherGazeAwayEnter =
+        eyeGaze &&
+        (Math.abs(smoothedGazeH) > GAZE_ENTER.horizontal ||
+          smoothedGazeV < -GAZE_ENTER.vertical);
+
+      const headAwayEnter = downAwayEnter || otherHeadAwayEnter || otherGazeAwayEnter;
+
+      const headDownExit = smoothedHeadV <= HEAD_EXIT.down;
+      const gazeDownExit = !eyeGaze || smoothedGazeV <= GAZE_EXIT.vertical;
 
       const headWithinExit =
         Math.abs(smoothedHeadH) <= HEAD_EXIT.horizontal &&
-        smoothedHeadV <= HEAD_EXIT.down &&
+        headDownExit &&
         smoothedHeadV >= HEAD_EXIT.up;
-
-      const gazeAwayEnter =
-        eyeGaze &&
-        (Math.abs(smoothedGazeH) > GAZE_ENTER.horizontal ||
-          Math.abs(smoothedGazeV) > GAZE_ENTER.vertical);
 
       const gazeWithinExit =
         !eyeGaze ||
         (Math.abs(smoothedGazeH) <= GAZE_EXIT.horizontal &&
-          Math.abs(smoothedGazeV) <= GAZE_EXIT.vertical);
+          gazeDownExit &&
+          smoothedGazeV >= -GAZE_EXIT.vertical);
 
-      const crossedEnter = headAwayEnter || gazeAwayEnter;
+      const crossedEnter = headAwayEnter;
       const withinExit = headWithinExit && gazeWithinExit;
 
       if (!currentlyAway && crossedEnter) {
@@ -289,15 +303,18 @@ export function checkLookingAway(faceLandmarks) {
     return null;
   }
 
-  const headAway =
+  const headDown = headPose.verticalOffset > HEAD_ENTER.down;
+  const gazeDown = eyeGaze ? eyeGaze.verticalOffset > GAZE_ENTER.vertical : false;
+  const downAway = eyeGaze ? headDown && gazeDown : headDown;
+
+  const otherHeadAway =
     Math.abs(headPose.horizontalOffset) > HEAD_ENTER.horizontal ||
-    headPose.verticalOffset > HEAD_ENTER.down ||
     headPose.verticalOffset < HEAD_ENTER.up;
 
-  const gazeAway =
+  const otherGazeAway =
     eyeGaze &&
     (Math.abs(eyeGaze.horizontalOffset) > GAZE_ENTER.horizontal ||
-      Math.abs(eyeGaze.verticalOffset) > GAZE_ENTER.vertical);
+      eyeGaze.verticalOffset < -GAZE_ENTER.vertical);
 
-  return headAway || gazeAway ? VIOLATION_TYPES.LOOKING_AWAY : null;
+  return downAway || otherHeadAway || otherGazeAway ? VIOLATION_TYPES.LOOKING_AWAY : null;
 }

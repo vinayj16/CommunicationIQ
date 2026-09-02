@@ -16,13 +16,6 @@ import { VIOLATION_TYPES } from '../constants';
   /public/models/yolov8n.onnx
 */
 
-
-
-
-
-
-
-
 const ORT_SCRIPT_URL =
   'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js';
 
@@ -31,8 +24,8 @@ const INPUT_SIZE = 640;
 
 // Lower phone threshold helps detect small, cropped, or partly occluded phones.
 // Lower values increase sensitivity but can also create false positives.
-const PHONE_SCORE_THRESHOLD = 0.13;
-const PERSON_SCORE_THRESHOLD = 0.5;
+const PHONE_SCORE_THRESHOLD = 0.10;
+const PERSON_SCORE_THRESHOLD = 0.3;
 const IOU_THRESHOLD = 0.45;
 
 const PERSON_CLASS_ID = 0;
@@ -201,10 +194,10 @@ function parseDetections(output) {
     boxes.push({
       classId,
       score,
-      x1: cx - width / 2,
-      y1: cy - height / 2,
-      x2: cx + width / 2,
-      y2: cy + height / 2,
+      x1: Math.max(0, cx - width / 2),
+      y1: Math.max(0, cy - height / 2),
+      x2: Math.min(INPUT_SIZE, cx + width / 2),
+      y2: Math.min(INPUT_SIZE, cy + height / 2),
     });
   }
 

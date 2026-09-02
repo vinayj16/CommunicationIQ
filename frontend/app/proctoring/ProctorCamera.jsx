@@ -26,19 +26,16 @@ import {
   requestFullscreen,
   exitFullscreen
 } from './detectors/fullscreenExit';
+import {
+  loadPhoneDetector,
+  releasePhoneDetector,
+  runObjectDetection,
+  checkMobilePhone,
+  countPersons
+} from './detectors/mobilePhone';
 import ViolationToast from './ViolationToast';
 import { API_BASE, getToken } from '@/lib/api';
 
-/**
- * ProctorCamera — AI interview proctoring component.
- *
- * Props:
- * - sessionId: string|number — the interview session id
- * - enabled: boolean — whether proctoring should be active
- * - onViolation: ({ type, count, timestamp }) => void — called on each confirmed violation
- * - onAutoEnd: ({ reason, violationType, count, timestamp }) => void — called when max violations reached
- * - examCompleted: boolean — set true when interview finishes normally
- */
 const ProctorCamera = ({
   sessionId,
   enabled = true,
@@ -60,6 +57,19 @@ const ProctorCamera = ({
     lookingAwayTrackerRef.current = createLookingAwayTracker();
   }
 
+  const phoneSessionRef = useRef(null);
+  const phoneCheckInFlightRef = useRef(false);
+  const activePhoneViolationRef = useRef(null);
+
+  // Person-body count from the same YOLO pass used for phone detection.
+  // Fed into checkMultipleFaces() as a fallback for a second person whose
+  // face isn't frontal (turned away / side-on), which MediaPipe's
+  // face-only detector can't see on its own. Defaults to 1 until the
+  // first object-detection pass completes.
+  const personCountRef = useRef(1);
+
+  const pendingAutoEndRef = useRef(null);
+
   const persistedOnMount = readPersistedState(sessionId);
 
   const [faceStatus, setFaceStatus] = useState('Initializing...');
@@ -70,6 +80,11 @@ const ProctorCamera = ({
     () => persistedOnMount?.violationCount ?? 0
   );
   const [fullscreenReady, setFullscreenReady] = useState(() => isDocumentFullscreen());
+  // Tracks whether onAutoEnd already fired for the final violation this
+  // render cycle, so the fallback lock screen (with its own "Continue to
+  // Results" button) doesn't render a second time while the parent is
+  // still navigating away — see the isLocked render block below.
+  const [autoEndFired, setAutoEndFired] = useState(false);
 
   const fullscreenTimerRef = useRef(null);
   const violationCountRef = useRef(persistedOnMount?.violationCount ?? 0);
@@ -119,6 +134,13 @@ const ProctorCamera = ({
       try { faceLandmarkerRef.current.close(); } catch { /* ignore */ }
       faceLandmarkerRef.current = null;
     }
+
+    if (phoneSessionRef.current) {
+      releasePhoneDetector(phoneSessionRef.current);
+      phoneSessionRef.current = null;
+    }
+    phoneCheckInFlightRef.current = false;
+    activePhoneViolationRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -209,6 +231,15 @@ const ProctorCamera = ({
         });
         if (cancelled) { detector.close(); landmarker.close(); return; }
         faceLandmarkerRef.current = landmarker;
+
+        const phoneSession = await loadPhoneDetector();
+        if (cancelled) {
+          detector.close();
+          landmarker.close();
+          releasePhoneDetector(phoneSession);
+          return;
+        }
+        phoneSessionRef.current = phoneSession;
 
         setFaceStatus('Face detector ready');
       } catch (err) {
@@ -305,15 +336,22 @@ const ProctorCamera = ({
     setCurrentToast({ type, count: nextCount, isFinal, timestamp });
 
     if (isFinal) {
+      // Release the camera hardware immediately rather than waiting for
+      // the isLocked-driven effect — on a backgrounded tab (exactly the
+      // case when the user has switched to another app), React can delay
+      // that effect, leaving the camera indicator on longer than it
+      // should be. teardown() is idempotent (safe to call again from the
+      // effect right after).
+      teardown();
       setIsLocked(true);
-      onAutoEnd?.({
+      pendingAutoEndRef.current = {
         reason: 'proctoring_violation_limit_reached',
         violationType: type,
         count: nextCount,
         timestamp
-      });
+      };
     }
-  }, [sessionId, onViolation, onAutoEnd]);
+  }, [sessionId, onViolation, onAutoEnd, teardown]);
 
   const trackViolation = useCallback((type, now) => {
     const active = activeViolationRef.current;
@@ -336,6 +374,30 @@ const ProctorCamera = ({
 
   const clearActiveViolation = () => {
     activeViolationRef.current = null;
+  };
+
+  const trackPhoneViolation = useCallback((now) => {
+    const type = VIOLATION_TYPES.MOBILE_PHONE;
+    const active = activePhoneViolationRef.current;
+
+    if (!active) {
+      activePhoneViolationRef.current = { since: now, confirmed: false };
+      setFaceStatus(`Checking (${VIOLATION_COPY[type]?.title || 'Phone detected'})...`);
+      return;
+    }
+
+    if (active.confirmed) return;
+
+    if (now - active.since >= getConfirmDuration(type)) {
+      activePhoneViolationRef.current = { ...active, confirmed: true };
+      confirmViolation(type);
+    } else {
+      setFaceStatus(`Checking (${VIOLATION_COPY[type]?.title || 'Phone detected'})...`);
+    }
+  }, [confirmViolation]);
+
+  const clearPhoneViolation = () => {
+    activePhoneViolationRef.current = null;
   };
 
   // ==================================================
@@ -363,12 +425,38 @@ const ProctorCamera = ({
       if (now - lastDetectionTimeRef.current >= DETECTION_INTERVAL_MS) {
         lastDetectionTimeRef.current = now;
 
+        // Phone + person-body detection: async YOLO inference, run
+        // independently of the synchronous face checks below. Guarded so
+        // a slow inference call can't stack up multiple overlapping runs.
+        // The same detection pass feeds both checkMobilePhone() and the
+        // personCountRef used by checkMultipleFaces() below.
+        if (phoneSessionRef.current && !phoneCheckInFlightRef.current) {
+          phoneCheckInFlightRef.current = true;
+          runObjectDetection(phoneSessionRef.current, video)
+            .then((objDetections) => {
+              const phoneViolation = checkMobilePhone(objDetections);
+              if (phoneViolation) {
+                trackPhoneViolation(performance.now());
+              } else {
+                clearPhoneViolation();
+              }
+
+              personCountRef.current = countPersons(objDetections) || 1;
+            })
+            .catch((err) => {
+              console.error('[ProctorCamera] phone detection error:', err);
+            })
+            .finally(() => {
+              phoneCheckInFlightRef.current = false;
+            });
+        }
+
         try {
           const detectorResult = detector.detectForVideo(video, now);
           const detections = detectorResult?.detections || [];
 
           const noFace = checkFaceNotDetected(detections);
-          const multiFace = checkMultipleFaces(detections);
+          const multiFace = checkMultipleFaces(detections, personCountRef.current);
 
           if (noFace) {
             trackViolation(noFace, now);
@@ -409,7 +497,7 @@ const ProctorCamera = ({
         animationFrameRef.current = null;
       }
     };
-  }, [shouldProctor, isLocked, examCompleted, proctoringBlocked, trackViolation]);
+  }, [shouldProctor, isLocked, examCompleted, proctoringBlocked, trackViolation, trackPhoneViolation]);
 
   // ==================================================
   // 4b. FULLSCREEN EXIT DETECTION
@@ -507,7 +595,6 @@ const ProctorCamera = ({
     };
   }, [shouldProctor, isLocked, examCompleted, proctoringBlocked, confirmViolation]);
 
-  // Unmount cleanup
   useEffect(() => {
     return () => { teardown(); };
   }, [teardown]);
@@ -627,14 +714,22 @@ const ProctorCamera = ({
 
   if (isLocked) {
     // Show the detailed violation-summary card first (currentToast holds it
-    // right after the 4th strike fires). Only once it's dismissed — or on a
-    // page reload where currentToast never got set — fall back to the plain
-    // persistent lock screen below.
+    // right after the final strike fires). Only once it's dismissed — or on
+    // a page reload where currentToast never got set — fall back to the
+    // plain persistent lock screen below.
     if (currentToast?.isFinal) {
       return (
         <ViolationToast
           violation={currentToast}
-          onDismiss={() => setCurrentToast(null)}
+          onDismiss={() => {
+            setCurrentToast(null);
+            const payload = pendingAutoEndRef.current;
+            if (payload) {
+              pendingAutoEndRef.current = null;
+              setAutoEndFired(true);
+              onAutoEnd?.(payload);
+            }
+          }}
           onReenterFullscreen={async () => {
             await requestFullscreen();
             setFullscreenReady(isDocumentFullscreen());
@@ -642,6 +737,19 @@ const ProctorCamera = ({
         />
       );
     }
+
+    // onAutoEnd already fired from the dismiss above — keep the same
+    // backdrop up instead of going blank, so there's no flash of the
+    // underlying page while waiting for the parent to navigate away.
+    if (autoEndFired) {
+      return (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+        />
+      );
+    }
+
     return (
       <div
         className="fixed inset-0 z-[100] flex items-center justify-center p-4"
@@ -671,6 +779,23 @@ const ProctorCamera = ({
             Your interview was automatically submitted after repeated proctoring
             violations. Contact an administrator if you believe this was a mistake.
           </p>
+
+          <button
+            type="button"
+            onClick={() => {
+              const payload = pendingAutoEndRef.current || {
+                reason: 'proctoring_violation_limit_reached',
+                violationType: persistedOnMount?.lastViolationType ?? null,
+                count: violationCountRef.current,
+                timestamp: persistedOnMount?.lastViolationAt ?? Date.now()
+              };
+              pendingAutoEndRef.current = null;
+              onAutoEnd?.(payload);
+            }}
+            className="btn btn-primary w-full mt-4"
+          >
+            Continue to Results
+          </button>
         </div>
       </div>
     );
@@ -740,7 +865,6 @@ const ProctorCamera = ({
         </div>
       )}
 
-      {/* Violation Toast */}
       <ViolationToast
         violation={currentToast}
         onDismiss={() => setCurrentToast(null)}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { VIOLATION_COPY, MAX_VIOLATIONS } from './constants';
 import { isDocumentFullscreen } from './detectors/fullscreenExit';
@@ -17,6 +17,21 @@ const ViolationToast = ({ violation, onDismiss, onReenterFullscreen }) => {
   const [visible, setVisible] = useState(false);
   const [exiting, setExiting] = useState(false);
 
+  // The parent (ProctorCamera) re-renders very frequently — every
+  // detection tick updates faceStatus — and passes onDismiss as an
+  // inline arrow function each time, so its identity changes on nearly
+  // every render. Keeping it in a ref (instead of the effect's
+  // dependency array) means the show/hide effect below only re-runs when
+  // `violation` itself actually changes, not on every unrelated parent
+  // re-render. Without this, a parent re-render landing mid-dismiss would
+  // re-fire the effect, reset visible/exiting back to their "showing"
+  // values, and undo the fade-out already in progress — the toast would
+  // flash back before finally disappearing.
+  const onDismissRef = useRef(onDismiss);
+  useEffect(() => {
+    onDismissRef.current = onDismiss;
+  }, [onDismiss]);
+
   useEffect(() => {
     if (violation) {
       setVisible(true);
@@ -27,13 +42,13 @@ const ViolationToast = ({ violation, onDismiss, onReenterFullscreen }) => {
           setExiting(true);
           setTimeout(() => {
             setVisible(false);
-            onDismiss?.();
+            onDismissRef.current?.();
           }, 250);
         }, 6000);
         return () => clearTimeout(timer);
       }
     }
-  }, [violation, onDismiss]);
+  }, [violation]);
 
   // Whether the browser is actually out of fullscreen right now. This is
   // checked independent of which violation type fired — a TAB_SWITCH
