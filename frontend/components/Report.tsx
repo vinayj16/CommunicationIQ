@@ -5,6 +5,7 @@ import { Section } from "@/components/ui";
 import { DIMENSION_LABEL } from "@/lib/dimensions";
 import type { AttemptResult, EvidenceRow, Highlight, Narration, SectionResult,
               SkillScore } from "@/lib/api";
+import { getToken } from "@/lib/api";
 
 /**
  *  The parts of a result that are not a number.
@@ -320,11 +321,30 @@ function EvidenceItem({ row }: { row: EvidenceRow }) {
  *  are looking at, which is exactly what printing produces.
  */
 export function Export({ csvUrl, reportUrl }: { csvUrl: string; reportUrl?: string }) {
+  const handleCsvDownload = async () => {
+    const token = getToken();
+    try {
+      const res = await fetch(csvUrl, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Failed to download");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "results.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      window.open(csvUrl, "_blank");
+    }
+  };
+
   return (
     <div className="flex flex-wrap gap-2 mb-4 print:hidden">
-      <a href={csvUrl} className="btn btn-ghost btn-sm ds-focus" download>
+      <button onClick={handleCsvDownload} className="btn btn-ghost btn-sm ds-focus">
         <Download size={13} /> Download as a spreadsheet
-      </a>
+      </button>
       {reportUrl && (
         <a href={reportUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm ds-focus">
           <FileText size={13} /> Download PDF Report

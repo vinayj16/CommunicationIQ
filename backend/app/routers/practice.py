@@ -3,7 +3,7 @@
 The fast loop. A student who will not face a full speaking simulation on a
 Tuesday evening will still do ten grammar items on a bus, and the product's
 job is to make that count for something without letting it substitute for the
-thing that actually matters â€” hence the quiz XP cap, enforced in the ledger.
+thing that actually matters — hence the quiz XP cap, enforced in the ledger.
 
 The drill loop is the slow one: fail, understand why, do five similar items,
 take a harder one, re-test. It is always pointed at a diagnosed weakness, and
@@ -21,6 +21,7 @@ from app.deps import Principal, TenantModels, require_roles
 from app.gamification import engine as game
 from app.schemas import (DrillCompletion, DrillOut, MistakeOut, QuizAnswer, QuizItemOut,
                          QuizResult, QuizResultItem, QuizSubmission)
+from app.subscription import require_subscription
 
 router = APIRouter(prefix="/student", tags=["practice"],
                    dependencies=[Depends(require_roles("student"))])
@@ -58,12 +59,15 @@ async def next_quiz(principal: Principal, models: TenantModels,
     """A quiz session, weighted toward the student's weakest area.
 
     The correct answer is deliberately not in this payload. It arrives with
-    the result, after the answer has been given â€” a quiz whose key is in the
+    the result, after the answer has been given — a quiz whose key is in the
     network tab is not a measurement.
 
     company filter: empty string = general questions only, company name = company questions only.
     difficulty filter: easy (0-0.33), medium (0.34-0.66), hard (0.67-1.0)
     """
+    # Subscription check for general users
+    await require_subscription(principal)
+    
     count = max(1, min(count, 200))
     weakest = await game.weakest_skills(models, principal.user_id, 2)
 
@@ -149,6 +153,9 @@ async def list_companies_for_students(principal: Principal, models: TenantModels
 async def submit_quiz(body: QuizSubmission, principal: Principal,
                       models: TenantModels) -> QuizResult:
     """Mark a quiz, update the mistake bank, award capped XP."""
+    # Subscription check for general users
+    await require_subscription(principal)
+    
     if not body.answers:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No answers submitted")
 
@@ -329,6 +336,9 @@ async def create_drill(principal: Principal, models: TenantModels,
     and five random items dressed up as a personalised drill would be the kind
     of small dishonesty this product cannot afford.
     """
+    # Subscription check for general users
+    await require_subscription(principal)
+
     mastery = await models.SkillMastery.find(
         models.SkillMastery.user_id == principal.user_id).sort(
         models.SkillMastery.mastery).to_list()

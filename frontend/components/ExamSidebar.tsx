@@ -111,7 +111,7 @@ export function ExamSidebar({
   if (collapsed) {
     return (
       <div className="min-h-[calc(100vh-80px)]">
-        <div className="sticky top-0 z-40 flex items-center justify-between px-4 py-2 border-b border-border bg-surface/95 backdrop-blur-sm">
+        <div className="sticky top-0 z-40 flex items-center justify-between px-4 py-2 border-b border-border bg-surface/95 backdrop-blur-sm" style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
           <div className="flex items-center gap-3">
             <span className="text-xs font-bold">{currentIndex + 1} / {totalQuestions}</span>
             <div className="flex gap-1">
@@ -169,11 +169,11 @@ export function ExamSidebar({
     );
   }
 
-  // Full sidebar mode — professional exam interface
+  // Full sidebar mode — professional exam interface (fullscreen overlay)
   return (
-    <div className="flex min-h-[calc(100vh-80px)]">
+    <div className="fixed inset-0 z-50 flex bg-surface">
       {/* Main content area (left) */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col">
         {/* Top bar */}
         <div className="sticky top-0 z-40 border-b border-border bg-surface/95 backdrop-blur-sm">
           <div className="flex items-center justify-between px-4 py-2">
@@ -235,11 +235,11 @@ export function ExamSidebar({
         </div>
 
         {/* Question content */}
-        <div className="p-6">{children}</div>
+        <div className="flex-1 overflow-y-auto thin-scroll p-6 pt-8">{children}</div>
       </div>
 
       {/* Right sidebar panel */}
-      <div className="w-56 shrink-0 border-l border-border bg-surface flex flex-col" style={{ position: "sticky", top: "80px", height: "calc(100vh - 80px)" }}>
+      <div className="w-60 shrink-0 border-l border-border bg-surface flex flex-col h-full">
         {/* Legend */}
         <div className="p-3 border-b border-border space-y-1.5">
           <div className="flex items-center justify-between">

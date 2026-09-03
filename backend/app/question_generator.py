@@ -251,6 +251,69 @@ Return ONLY a JSON object (no markdown fences):
     return None
 
 
+async def generate_listening_passage(company: str = "") -> dict | None:
+    """Generate a listening passage with transcript and comprehension questions."""
+    company_ctx = f" in a {company} workplace context" if company else ""
+    prompt = f"""Generate a short listening passage{company_ctx} with comprehension questions.
+Return ONLY a JSON object (no markdown fences):
+{{
+  "title": "Short title for the audio",
+  "transcript": "A 150-200 word passage that would be read aloud in a workplace setting",
+  "kind": "short_talk",
+  "approx_seconds": 45,
+  "questions": [
+    {{"question": "Question text", "options": ["A", "B", "C", "D"], "correctAnswer": 0}}
+  ]
+}}"""
+    try:
+        raw = await _call_groq(prompt)
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("```", 1)[0]
+        data = json.loads(raw.strip())
+        if isinstance(data, dict) and "transcript" in data:
+            return data
+    except Exception:
+        log.exception("Failed to generate listening passage via Groq")
+    return None
+
+
+def _assign_speaking_task_type() -> str:
+    """Pick a random speaking task type."""
+    return random.choice([
+        "open_response", "read_aloud", "repeat_sentence",
+        "short_answer", "story_retell", "sentence_build",
+    ])
+
+
+async def generate_speaking_prompt(company: str = "") -> dict | None:
+    """Generate a speaking prompt."""
+    task_type = _assign_speaking_task_type()
+    company_ctx = f" in a {company} context" if company else ""
+    prompt = f"""Generate a {task_type.replace('_', ' ')} speaking prompt{company_ctx}.
+Return ONLY a JSON object (no markdown fences):
+{{
+  "task_type": "{task_type}",
+  "prompt_text": "What the student should read, repeat, or say",
+  "reference_text": "Expected answer or reference for scoring",
+  "audio_key": ""
+}}"""
+    try:
+        raw = await _call_groq(prompt)
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("```", 1)[0]
+        data = json.loads(raw.strip())
+        if isinstance(data, dict) and "prompt_text" in data:
+            data["task_type"] = task_type
+            return data
+    except Exception:
+        log.exception("Failed to generate speaking prompt via Groq")
+    return None
+
+
 async def run_daily_generation(tenant_session=None):
     """Run the daily question generation cycle.
 
@@ -263,7 +326,7 @@ async def run_daily_generation(tenant_session=None):
 
     Total: ~50 new questions per day.
     """
-    from app.models.tenant import QuizItem, ReadingPassage, WritingPrompt
+    from app.models.tenant import QuizItem, ReadingPassage, WritingPrompt, ListeningPassage, TaskItem
     from app.config import settings
 
     log.info("Starting daily AI question generation")
@@ -357,6 +420,52 @@ async def run_daily_generation(tenant_session=None):
             except Exception:
                 log.exception("Failed to save writing prompt")
 
+    # 4b. General listening passages
+    for _ in range(2):
+        listen_data = await generate_listening_passage()
+        if listen_data:
+            try:
+                lp = ListeningPassage(
+                    title=listen_data.get("title", "AI-Generated Listening"),
+                    transcript=listen_data.get("transcript", ""),
+                    company="",
+                    status="published",
+                )
+                await lp.create()
+                for qi, q in enumerate(listen_data.get("questions", [])):
+                    item = QuizItem(
+                        category="audio_comprehension",
+                        stem=q.get("question", ""),
+                        options=q.get("options", []),
+                        correct_index=q.get("correctAnswer", 0),
+                        passage_id=str(lp.id),
+                        difficulty=_assign_difficulty(),
+                        company="",
+                        status="published",
+                    )
+                    await item.create()
+                generated["listening"] = generated.get("listening", 0) + 1
+            except Exception:
+                log.exception("Failed to save listening passage")
+
+    # 4c. General speaking prompts
+    for _ in range(3):
+        speak_data = await generate_speaking_prompt()
+        if speak_data:
+            try:
+                tp = TaskItem(
+                    task_type=speak_data.get("task_type", "open_response"),
+                    prompt_text=speak_data.get("prompt_text", ""),
+                    reference_text=speak_data.get("reference_text", ""),
+                    company="",
+                    difficulty=_assign_difficulty(),
+                    status="published",
+                )
+                await tp.create()
+                generated["speaking"] = generated.get("speaking", 0) + 1
+            except Exception:
+                log.exception("Failed to save speaking prompt")
+
     # 5. Company-specific questions (3 grammar + 2 vocabulary per company)
     for company in COMPANIES:
         grammar_qs = await generate_grammar_questions(3, company)
@@ -440,6 +549,51 @@ async def run_daily_generation(tenant_session=None):
                 generated["writing"] += 1
             except Exception:
                 log.exception(f"Failed to save {company} writing prompt")
+
+        # 1 listening passage per company
+        listen_data = await generate_listening_passage(company)
+        if listen_data:
+            try:
+                lp = ListeningPassage(
+                    title=f"{company}: {listen_data.get('title', 'AI Listening')}",
+                    transcript=listen_data.get('transcript', ''),
+                    company=company,
+                    status="published",
+                )
+                await lp.create()
+                for q in listen_data.get('questions', []):
+                    item = QuizItem(
+                        category="audio_comprehension",
+                        stem=q.get('question', ''),
+                        options=q.get('options', []),
+                        correct_index=q.get('correctAnswer', 0),
+                        passage_id=str(lp.id),
+                        difficulty=_assign_difficulty(),
+                        company=company,
+                        status="published",
+                    )
+                    await item.create()
+                generated["listening"] = generated.get("listening", 0) + 1
+            except Exception:
+                log.exception(f"Failed to save {company} listening passage")
+
+        # 2 speaking prompts per company
+        for _ in range(2):
+            speak_data = await generate_speaking_prompt(company)
+            if speak_data:
+                try:
+                    tp = TaskItem(
+                        task_type=speak_data.get("task_type", "open_response"),
+                        prompt_text=speak_data.get("prompt_text", ""),
+                        reference_text=speak_data.get("reference_text", ""),
+                        company=company,
+                        difficulty=_assign_difficulty(),
+                        status="published",
+                    )
+                    await tp.create()
+                    generated["speaking"] = generated.get("speaking", 0) + 1
+                except Exception:
+                    log.exception(f"Failed to save {company} speaking prompt")
 
         # Small delay between companies to avoid rate limits
         await asyncio.sleep(0.5)

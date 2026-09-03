@@ -21,8 +21,10 @@ import { FullscreenGuard } from "@/components/FullscreenGuard";
 import { LevelSelect, type DifficultyLevel } from "@/components/LevelSelect";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
+import { ReviewCard } from "@/components/ReviewCard";
 import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
 import { markAttempted } from "@/lib/setTracker";
+import { setExamMode } from "@/lib/examMode";
 
 export default function ListeningPage() {
   return (
@@ -74,6 +76,7 @@ function Listening() {
       setAnswers({});
       setPlaysUsed(0);
       setResult(null);
+      setExamMode(true);
       setStage("listen");
     } catch (err) {
       setProblem(err instanceof ApiError ? err.detail : "No listening passages with questions available yet.");
@@ -144,6 +147,7 @@ function Listening() {
       }));
       toast("success", "Answers submitted successfully");
       proctoring.stopCamera();
+      setExamMode(false);
       cancelSpeech();
       setStage("marked");
     } catch (err) {
@@ -275,8 +279,7 @@ function Listening() {
         currentIndex={questions.findIndex(q => answers[q.id] == null) ?? 0}
         totalQuestions={questions.length}
         sectionTitle="Listening Comprehension"
-        companyLabel="General"
-        collapsed={true}
+        companyLabel={session.kind && !['general', 'announcement', 'instruction', 'talk', 'voicemail', 'conversation'].includes(session.kind) ? `${session.kind} Round` : "General"}
         onEndExam={() => {
           if (confirm("Are you sure you want to end this practice?")) {
             void submit();
@@ -284,6 +287,12 @@ function Listening() {
         }}
         onNavigate={() => {}}
       >
+        <CameraPreview
+          videoRef={proctoring.videoRef}
+          faceCount={proctoring.state.faceCount}
+          strikes={proctoring.state.strikes}
+          isFocused={proctoring.state.isFocused}
+        />
         <PageHeader title={session.title}
                     sub="Choose one answer for each question, then submit." />
         <div className="ds-card p-3 mb-4 flex items-center gap-3">
@@ -413,6 +422,9 @@ function Listening() {
             {result.transcript}
           </p>
         </Section>
+
+        {/* Review & Rating Card */}
+        <ReviewCard attemptId={session?.attempt_id} label="listening" onNext={autoStart} onBack={() => { proctoring.stopCamera(); setStage("intro"); }} nextLabel="Another passage →" />
       </>
     );
   }

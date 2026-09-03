@@ -149,9 +149,87 @@ async def audit_log_view(limit: int = 100) -> list[AuditOut]:
         AuditOut(
             id=a.id, actor_type=a.actor_type, actor_label=a.actor_label,
             tenant_id=a.tenant_id, action=a.action, entity=a.entity,
-            entity_id=a.entity_id, at=a.at,
+            entity_id=a.entity_id, ip_address=getattr(a, 'ip_address', ''), at=a.at,
         )
         for a in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Plans, SMTP, Payment, Email Templates — read endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/plans")
+async def list_plans() -> list[dict]:
+    from app.db import control_db
+    db = control_db()
+    rows = await db["plans"].find().sort("created_at", -1).to_list(100)
+    return [
+        {
+            "id": str(r["_id"]), "name": r.get("name", ""), "slug": r.get("slug", ""),
+            "description": r.get("description", ""),
+            "price_monthly": r.get("price_monthly", 0), "price_yearly": r.get("price_yearly", 0),
+            "seat_limit": r.get("seat_limit", 50), "features": r.get("features", []),
+            "max_questions": r.get("max_questions", 500), "max_exams_per_day": r.get("max_exams_per_day", 10),
+            "has_proctoring": r.get("has_proctoring", True), "has_analytics": r.get("has_analytics", True),
+            "has_custom_branding": r.get("has_custom_branding", False), "has_api_access": r.get("has_api_access", False),
+            "is_active": r.get("is_active", True), "is_default": r.get("is_default", False),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/smtp")
+async def get_smtp(tenant_id: str | None = None) -> dict | None:
+    from app.db import control_db
+    db = control_db()
+    doc = await db["smtp_configs"].find_one({"tenant_id": tenant_id})
+    if not doc:
+        return None
+    return {
+        "id": str(doc["_id"]), "host": doc.get("host", ""), "port": doc.get("port", 587),
+        "username": doc.get("username", ""), "from_email": doc.get("from_email", ""),
+        "from_name": doc.get("from_name", "CommunicationIQ"),
+        "use_tls": doc.get("use_tls", True), "use_ssl": doc.get("use_ssl", False),
+        "is_active": doc.get("is_active", True), "tenant_id": doc.get("tenant_id"),
+        "password": "***" if doc.get("password") else "",  # masked
+    }
+
+
+@router.get("/payment")
+async def get_payment_config(gateway: str = "stripe") -> dict | None:
+    from app.db import control_db
+    db = control_db()
+    doc = await db["payment_configs"].find_one({"gateway": gateway})
+    if not doc:
+        return None
+    return {
+        "id": str(doc["_id"]), "gateway": doc.get("gateway", ""),
+        "test_mode": doc.get("test_mode", True),
+        "stripe_publishable": doc.get("stripe_publishable", ""),
+        "stripe_secret": "***" if doc.get("stripe_secret") else "",
+        "stripe_webhook_secret": "***" if doc.get("stripe_webhook_secret") else "",
+        "razorpay_key_id": doc.get("razorpay_key_id", ""),
+        "razorpay_key_secret": "***" if doc.get("razorpay_key_secret") else "",
+        "currency": doc.get("currency", "INR"),
+        "is_active": doc.get("is_active", False),
+    }
+
+
+@router.get("/email-templates")
+async def list_email_templates() -> list[dict]:
+    from app.db import control_db
+    db = control_db()
+    rows = await db["email_templates"].find().sort("created_at", -1).to_list(100)
+    return [
+        {
+            "id": str(r["_id"]), "key": r.get("key", ""), "name": r.get("name", ""),
+            "subject": r.get("subject", ""), "body_html": r.get("body_html", ""),
+            "body_text": r.get("body_text", ""),
+            "category": r.get("category", "transactional"),
+            "is_active": r.get("is_active", True),
+        }
+        for r in rows
     ]
 
 
@@ -219,7 +297,7 @@ _AUDIO_KEY = re.compile(r"^audio/[a-f0-9]{64}\.(wav|m4a|mp3)$")
 
 @router.get("/tenants/{tenant_id}/users")
 async def tenant_users(tenant_id: str) -> list[dict]:
-    """List users for a specific tenant ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â super admin visibility."""
+    """List users for a specific tenant — super admin visibility."""
     from app.db import ensure_tenant_models
     from app.models.platform import Tenant
 
@@ -243,6 +321,39 @@ async def tenant_users(tenant_id: str) -> list[dict]:
          "active": u.get('active', True),
          "branch": u.get('branch', ''), "year_of_study": u.get('year_of_study'),
          "roll_number": u.get('roll_number', ''),
+         "last_login_at": _iso(u.get('last_login_at'))}
+        for u in raw_users
+    ]
+
+
+@router.get("/external-users")
+async def list_external_users() -> list[dict]:
+    """List all external (general) users — super admin visibility."""
+    from app.models.platform import Tenant
+    
+    # Find the general tenant
+    general_tenant = await Tenant.find_one(Tenant.slug == "general")
+    if not general_tenant:
+        return []
+    
+    from app.db import client as _client, CONTROL_DB_NAME as _cdb
+    _coll = _client[_cdb]["users"]
+    raw_users = await _coll.find({"tenant_id": general_tenant.id}).to_list()
+    
+    # Get subscription info
+    _db = _client[_cdb]
+    plan_doc = await _db.plans.find_one({"_id": general_tenant.plan_id}) if general_tenant.plan_id else None
+    
+    def _iso(value):
+        if value is None:
+            return None
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+    
+    return [
+        {"id": str(u.get('_id', '')), "full_name": u.get('full_name', ''),
+         "email": u.get('email', ''), "role": u.get('role', 'student'),
+         "active": u.get('active', True),
+         "subscription": plan_doc.get("name", "Free Trial") if plan_doc else "Free Trial",
          "last_login_at": _iso(u.get('last_login_at'))}
         for u in raw_users
     ]
@@ -290,11 +401,13 @@ async def student_attempts(user_id: str, tenant_id: str) -> list[dict]:
 
 
 async def _create_reading(passage_id, body):
-    from app.db import ensure_shared_models
+    from app.db import ensure_shared_models, control_db
+    from app.set_engine import generate_question_number, auto_create_sets
     import uuid
     models = await ensure_shared_models()
+    qn = await generate_question_number("reading", control_db())
     passage = models.ReadingPassage(
-        id=passage_id, title=body.get("title", ""),
+        id=passage_id, question_number=qn, title=body.get("title", ""),
         kind=body.get("kind", "article"), body=body.get("body", ""),
         company=body.get("company", ""),
         word_count=len(body.get("body", "").split()),
@@ -302,8 +415,9 @@ async def _create_reading(passage_id, body):
     )
     await passage.create()
     for q in body.get("questions", []):
+        qn_q = await generate_question_number("reading", control_db())
         qi = models.QuizItem(
-            id=str(uuid.uuid4()), category="reading_comprehension",
+            id=str(uuid.uuid4()), question_number=qn_q, category="reading_comprehension",
             stem=q.get("stem", ""), options=q.get("options", []),
             correct_index=q.get("correct_index", 0),
             explanation=q.get("explanation", ""), passage_id=passage_id,
@@ -312,17 +426,20 @@ async def _create_reading(passage_id, body):
             difficulty=q.get("difficulty", 0.0), status="published",
         )
         await qi.create()
+    await auto_create_sets("reading", control_db())
 
 
 
 
 async def _create_writing(body):
-    from app.db import ensure_shared_models
+    from app.db import ensure_shared_models, control_db
+    from app.set_engine import generate_question_number, auto_create_sets
     import uuid
     models = await ensure_shared_models()
     prompt_id = str(uuid.uuid4())
+    qn = await generate_question_number("writing", control_db())
     prompt = models.WritingPrompt(
-        id=prompt_id, title=body.get("title", ""),
+        id=prompt_id, question_number=qn, title=body.get("title", ""),
         kind=body.get("kind", "essay"), prompt=body.get("prompt", ""),
         company=body.get("company", ""),
         scenario=body.get("scenario", ""),
@@ -332,18 +449,21 @@ async def _create_writing(body):
         difficulty=body.get("difficulty", 0.0), status="published",
     )
     await prompt.create()
+    await auto_create_sets("writing", control_db())
     return prompt_id
 
 
 
 
 async def _create_listening(body):
-    from app.db import ensure_shared_models
+    from app.db import ensure_shared_models, control_db
+    from app.set_engine import generate_question_number, auto_create_sets
     import uuid
     models = await ensure_shared_models()
     passage_id = str(uuid.uuid4())
+    qn = await generate_question_number("listening", control_db())
     passage = models.ListeningPassage(
-        id=passage_id, title=body.get("title", ""),
+        id=passage_id, question_number=qn, title=body.get("title", ""),
         kind=body.get("kind", "short_talk"),
         transcript=body.get("transcript", ""),
         company=body.get("company", ""),
@@ -355,8 +475,9 @@ async def _create_listening(body):
     )
     await passage.create()
     for q in body.get("questions", []):
+        qn_q = await generate_question_number("reading", control_db())
         qi = models.QuizItem(
-            id=str(uuid.uuid4()), category="audio_comprehension",
+            id=str(uuid.uuid4()), question_number=qn_q, category="audio_comprehension",
             stem=q.get("stem", ""), options=q.get("options", []),
             correct_index=q.get("correct_index", 0),
             explanation=q.get("explanation", ""), passage_id=passage_id,
@@ -365,6 +486,7 @@ async def _create_listening(body):
             difficulty=q.get("difficulty", 0.0), status="published",
         )
         await qi.create()
+    await auto_create_sets("listening", control_db())
     return passage_id
 
 
@@ -373,28 +495,36 @@ async def _create_listening(body):
 
 
 async def _create_quiz(category, body):
-    from app.db import ensure_shared_models
+    from app.db import ensure_shared_models, control_db
+    from app.set_engine import generate_question_number, auto_create_sets
     import uuid
     models = await ensure_shared_models()
     item_id = str(uuid.uuid4())
+    # Determine module from category
+    module = "reading" if category == "reading_comprehension" else "quiz"
+    qn = await generate_question_number(module, control_db())
     qi = models.QuizItem(
-        id=item_id, category=category, stem=body.get("stem", ""),
+        id=item_id, question_number=qn, category=category, stem=body.get("stem", ""),
         options=body.get("options", []), correct_index=body.get("correct_index", 0),
         explanation=body.get("explanation", ""), company=body.get("company", ""),
         difficulty=body.get("difficulty", 0.3),
         seconds_allowed=30, status="published",
     )
     await qi.create()
+    # Auto-create sets if enough questions
+    await auto_create_sets(module, control_db())
     return item_id
 
 
 async def _create_speaking(body):
-    from app.db import ensure_shared_models
+    from app.db import ensure_shared_models, control_db
+    from app.set_engine import generate_question_number, auto_create_sets
     import uuid
     models = await ensure_shared_models()
     item_id = str(uuid.uuid4())
+    qn = await generate_question_number("speaking", control_db())
     ti = models.TaskItem(
-        id=item_id, task_type=body.get("task_type", "open_response"),
+        id=item_id, question_number=qn, task_type=body.get("task_type", "open_response"),
         prompt_text=body.get("prompt_text", ""),
         company=body.get("company", ""),
         reference_text=body.get("reference_text", ""),
@@ -402,6 +532,7 @@ async def _create_speaking(body):
         difficulty=body.get("difficulty", 0.3), status="published",
     )
     await ti.create()
+    await auto_create_sets("speaking", control_db())
     return item_id
 
 
@@ -509,35 +640,37 @@ async def platform_reviews(limit: int = 100) -> list[dict]:
 
 @router.get("/questions")
 async def platform_questions(category: str = "", company: str = "",
+                             include_company: bool = False,
                              limit: int = 200) -> dict:
-    """Question bank overview for the platform admin console."""
+    """Question bank overview for the platform admin console.
+
+    When no company is specified and include_company=False, returns only general
+    (no-company) questions.  Pass include_company=True to get everything.
+    """
     from app.models.tenant import QuizItem, TaskItem, WritingPrompt, ListeningPassage, ReadingPassage
 
-    quiz_filter = {"status": "published"}
-    if category:
-        quiz_filter["category"] = category
-    if company:
-        quiz_filter["company"] = company
+    def _build_filter(base: dict, company_val: str) -> dict:
+        f = {**base}
+        if company_val:
+            f["company"] = company_val
+        elif not include_company:
+            # Default: only general questions (company is empty or missing)
+            f["company"] = {"$in": ["", None]}
+        return f
+
+    quiz_filter = _build_filter({"status": "published"}, company)
     quiz_items = await QuizItem.find(quiz_filter).limit(limit).to_list()
 
-    task_filter = {"status": "published"}
-    if company:
-        task_filter["company"] = company
+    task_filter = _build_filter({"status": "published"}, company)
     task_items = await TaskItem.find(task_filter).limit(limit).to_list()
 
-    writing_filter = {"status": "published"}
-    if company:
-        writing_filter["company"] = company
+    writing_filter = _build_filter({"status": "published"}, company)
     writing_prompts = await WritingPrompt.find(writing_filter).limit(limit).to_list()
 
-    listening_filter = {"status": "published"}
-    if company:
-        listening_filter["company"] = company
+    listening_filter = _build_filter({"status": "published"}, company)
     listening = await ListeningPassage.find(listening_filter).limit(limit).to_list()
 
-    reading_filter = {"status": "published"}
-    if company:
-        reading_filter["company"] = company
+    reading_filter = _build_filter({"status": "published"}, company)
     reading = await ReadingPassage.find(reading_filter).limit(limit).to_list()
 
     def _item_out(item, kind):
@@ -579,6 +712,13 @@ async def platform_questions(category: str = "", company: str = "",
 async def create_quiz_item(body: dict) -> dict:
     item_id = await _create_quiz(body.get("category", "reading_comprehension"), body)
     await audit_log.record_system("platform.create_question", entity="quiz_item")
+    # Auto-create sets if we have 10+ questions in this module
+    try:
+        from app.db import control_db
+        from app.set_engine import auto_create_sets
+        await auto_create_sets("quiz", control_db())
+    except Exception:
+        pass
     return {"id": item_id, "ok": True}
 
 
@@ -760,6 +900,12 @@ async def bulk_upload_questions(body: dict) -> dict:
 async def create_speaking_item(body: dict) -> dict:
     item_id = await _create_speaking(body)
     await audit_log.record_system("platform.create_question", entity="task_item")
+    try:
+        from app.db import control_db
+        from app.set_engine import auto_create_sets
+        await auto_create_sets("speaking", control_db())
+    except Exception:
+        pass
     return {"id": item_id, "ok": True}
 
 
@@ -769,6 +915,12 @@ async def create_reading_passage(body: dict) -> dict:
     passage_id = str(uuid.uuid4())
     await _create_reading(passage_id, body)
     await audit_log.record_system("platform.create_question", entity="reading_passage")
+    try:
+        from app.db import control_db
+        from app.set_engine import auto_create_sets
+        await auto_create_sets("reading", control_db())
+    except Exception:
+        pass
     return {"passage_id": passage_id, "ok": True}
 
 
@@ -776,6 +928,12 @@ async def create_reading_passage(body: dict) -> dict:
 async def create_writing_prompt(body: dict) -> dict:
     prompt_id = await _create_writing(body)
     await audit_log.record_system("platform.create_question", entity="writing_prompt")
+    try:
+        from app.db import control_db
+        from app.set_engine import auto_create_sets
+        await auto_create_sets("writing", control_db())
+    except Exception:
+        pass
     return {"prompt_id": prompt_id, "ok": True}
 
 
@@ -783,6 +941,12 @@ async def create_writing_prompt(body: dict) -> dict:
 async def create_listening_passage(body: dict) -> dict:
     passage_id = await _create_listening(body)
     await audit_log.record_system("platform.create_question", entity="listening_passage")
+    try:
+        from app.db import control_db
+        from app.set_engine import auto_create_sets
+        await auto_create_sets("listening", control_db())
+    except Exception:
+        pass
     return {"passage_id": passage_id, "ok": True}
 
 
@@ -792,6 +956,222 @@ async def generate_questions() -> dict:
     from app.question_generator import run_daily_generation
     result = await run_daily_generation()
     return {"generated": result, "ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Bulk import: file upload → validate → preview → confirm
+# ---------------------------------------------------------------------------
+
+import json as _json
+import uuid as _uuid
+from fastapi.responses import StreamingResponse as _SR
+from app.question_importer import (
+    parse_upload, get_template, ImportPlan, _normalise_header,
+    CATEGORY_ALIASES,
+)
+
+
+@router.post("/questions/import/preview")
+async def import_preview(
+    file: UploadFile,
+    category: str = "",
+    company: str = "",
+) -> dict:
+    """Parse uploaded file and return validation results (no DB writes)."""
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB limit
+        raise HTTPException(413, "File too large (max 10 MB)")
+
+    plan = parse_upload(file.filename or "upload.csv", content)
+
+    # Override category if provided
+    if category:
+        cat = CATEGORY_ALIASES.get(category.lower(), category)
+        for row in plan.rows:
+            row.category = cat
+
+    # Build preview (first 10 rows)
+    previews = []
+    for r in plan.rows[:10]:
+        raw = r.raw
+        previews.append({
+            "category": r.category,
+            "stem": raw.get("stem") or raw.get("prompt_text") or raw.get("prompt") or raw.get("body", ""),
+            "options": [raw.get(f"option_{c}", "") for c in "abcd" if raw.get(f"option_{c}")],
+            "difficulty": raw.get("difficulty", ""),
+            "company": raw.get("company", "") or company,
+        })
+
+    return {
+        "ok": True,
+        "total": plan.total,
+        "valid": plan.valid,
+        "warnings": plan.warnings,
+        "errors": plan.errors,
+        "duplicates": plan.duplicates,
+        "detected_category": plan.rows[0].category if plan.rows else category,
+        "problems": [{"row": p.row, "field": p.field, "message": p.message, "severity": p.severity} for p in plan.problems],
+        "preview": previews,
+    }
+
+
+@router.post("/questions/import/confirm")
+async def import_confirm(
+    file: UploadFile,
+    category: str = "",
+    company: str = "",
+) -> dict:
+    """Parse file again, validate, and insert into DB."""
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(413, "File too large (max 10 MB)")
+
+    plan = parse_upload(file.filename or "upload.csv", content)
+    if category:
+        cat = CATEGORY_ALIASES.get(category.lower(), category)
+        for row in plan.rows:
+            row.category = cat
+
+    # Only insert rows without errors
+    error_rows = {p.row for p in plan.problems if p.severity == "error"}
+    to_insert = [r for r in plan.rows if r.row_num not in error_rows]
+
+    if not to_insert:
+        return {"ok": False, "created": 0, "errors": len(error_rows), "message": "All rows have errors"}
+
+    from app.db import ensure_shared_models
+    models = await ensure_shared_models()
+    created = 0
+    cats = {}
+
+    for r in to_insert:
+        raw = r.raw
+        cat = r.category
+        try:
+            if cat == "quiz":
+                item_id = str(_uuid.uuid4())
+                opts = [raw.get(f"option_{c}", "") for c in "abcd" if raw.get(f"option_{c}")]
+                correct_letter = (raw.get("correct_answer") or "A").upper().strip()
+                correct_idx = {"A": 0, "B": 1, "C": 2, "D": 3}.get(correct_letter, 0)
+                diff = _parse_difficulty(raw.get("difficulty", "0.3"))
+                qi = models.QuizItem(
+                    id=item_id, category=raw.get("category") or raw.get("module") or "general",
+                    stem=raw.get("stem", ""), options=opts,
+                    correct_index=correct_idx, explanation=raw.get("explanation", ""),
+                    company=raw.get("company", "") or company,
+                    difficulty=diff, seconds_allowed=30, status="published",
+                )
+                await qi.create()
+                created += 1
+                cats["quiz"] = cats.get("quiz", 0) + 1
+
+            elif cat == "reading":
+                pid = str(_uuid.uuid4())
+                await _create_reading(pid, {
+                    "title": raw.get("title", ""),
+                    "kind": raw.get("kind", "article"),
+                    "body": raw.get("body", ""),
+                    "company": raw.get("company", "") or company,
+                    "difficulty": _parse_difficulty(raw.get("difficulty", "0.3")),
+                })
+                created += 1
+                cats["reading"] = cats.get("reading", 0) + 1
+
+            elif cat == "listening":
+                pid = str(_uuid.uuid4())
+                await _create_listening({
+                    "title": raw.get("title", ""),
+                    "kind": raw.get("kind", "short_talk"),
+                    "transcript": raw.get("transcript", ""),
+                    "company": raw.get("company", "") or company,
+                    "audio_key": raw.get("audio_key", ""),
+                    "accent": raw.get("accent", "indian"),
+                    "plays_allowed": int(raw.get("plays_allowed", 1) or 1),
+                    "approx_seconds": int(raw.get("approx_seconds", 45) or 45),
+                    "difficulty": _parse_difficulty(raw.get("difficulty", "0.3")),
+                })
+                created += 1
+                cats["listening"] = cats.get("listening", 0) + 1
+
+            elif cat == "writing":
+                kp = raw.get("key_points", "")
+                if isinstance(kp, str):
+                    kp = [k.strip() for k in kp.split(",") if k.strip()]
+                await _create_writing({
+                    "title": raw.get("title", ""),
+                    "kind": raw.get("kind", "essay"),
+                    "prompt": raw.get("prompt") or raw.get("stem", ""),
+                    "company": raw.get("company", "") or company,
+                    "scenario": raw.get("scenario", ""),
+                    "key_points": kp,
+                    "min_words": int(raw.get("min_words", 150) or 150),
+                    "suggested_minutes": int(raw.get("suggested_minutes", 20) or 20),
+                    "difficulty": _parse_difficulty(raw.get("difficulty", "0.3")),
+                })
+                created += 1
+                cats["writing"] = cats.get("writing", 0) + 1
+
+            elif cat == "speaking":
+                await _create_speaking({
+                    "task_type": raw.get("task_type", "open_response"),
+                    "prompt_text": raw.get("prompt_text") or raw.get("stem", ""),
+                    "company": raw.get("company", "") or company,
+                    "reference_text": raw.get("reference_text", ""),
+                    "audio_key": raw.get("audio_key", ""),
+                    "difficulty": _parse_difficulty(raw.get("difficulty", "0.3")),
+                })
+                created += 1
+                cats["speaking"] = cats.get("speaking", 0) + 1
+
+        except Exception as exc:
+            pass  # skip individual row errors silently
+
+    await audit_log.record_system(
+        "platform.import_questions",
+        entity=f"{category or 'mixed'}:{company or 'general'}",
+    )
+
+    # Auto-create sets for any module that got new questions
+    try:
+        from app.db import control_db
+        from app.set_engine import auto_create_sets
+        for mod in cats:
+            if mod in ("reading", "writing", "listening", "speaking", "quiz"):
+                await auto_create_sets(mod, control_db())
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "created": created,
+        "errors": len(error_rows),
+        "total": plan.total,
+        "by_category": cats,
+    }
+
+
+def _parse_difficulty(val: str | float | int) -> float:
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).lower().strip()
+    mapping = {"easy": 0.2, "beginner": 0.2, "medium": 0.5, "intermediate": 0.5, "hard": 0.8, "advanced": 0.8}
+    if s in mapping:
+        return mapping[s]
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return 0.5
+
+
+@router.get("/questions/import/template/{category}")
+async def import_template(category: str) -> HttpResponse:
+    """Download a CSV template for bulk question import."""
+    csv_text = get_template(category)
+    return HttpResponse(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{category}_template.csv"'},
+    )
 
 
 # ── Company management ────────────────────────────────────────────────────
@@ -910,6 +1290,121 @@ async def upload_audio(file: "UploadFile") -> dict:
 
 
 # --------------------------------------------------------------------------
+# Contact Messages
+# --------------------------------------------------------------------------
+
+@router.get("/messages")
+async def list_contact_messages(status: str = "") -> list[dict]:
+    """List contact messages (super admin inbox)."""
+    from app.models.platform import ContactMessage
+    query = {}
+    if status:
+        query["status"] = status
+    msgs = await ContactMessage.find(query).to_list()
+    msgs.sort(key=lambda m: m.created_at or m.updated_at or "", reverse=True)
+    return [
+        {
+            "id": m.id, "from_user_id": m.from_user_id,
+            "from_email": m.from_email, "from_name": m.from_name,
+            "from_role": m.from_role, "from_tenant_id": m.from_tenant_id,
+            "subject": m.subject, "body": m.body,
+            "status": m.status, "priority": m.priority,
+            "replies": m.replies,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        }
+        for m in msgs
+    ]
+
+
+# --------------------------------------------------------------------------
+# Exam Tests
+# --------------------------------------------------------------------------
+
+@router.get("/exam-tests")
+async def list_exam_tests() -> list[dict]:
+    """List all custom exam tests."""
+    from app.models.platform import ExamTest
+    tests = await ExamTest.find_all().to_list()
+    tests.sort(key=lambda t: t.created_at or t.updated_at or "", reverse=True)
+    return [
+        {
+            "id": t.id, "name": t.name, "description": t.description,
+            "slug": t.slug, "duration_minutes": t.duration_minutes,
+            "reading_questions": t.reading_questions,
+            "listening_questions": t.listening_questions,
+            "writing_questions": t.writing_questions,
+            "speaking_questions": t.speaking_questions,
+            "reading_seconds": t.reading_seconds,
+            "listening_seconds": t.listening_seconds,
+            "writing_seconds": t.writing_seconds,
+            "speaking_seconds": t.speaking_seconds,
+            "allow_pause": t.allow_pause, "show_timer": t.show_timer,
+            "one_shot_audio": t.one_shot_audio,
+            "is_active": t.is_active, "is_baseline": t.is_baseline,
+            "company": t.company, "question_ids": t.question_ids,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in tests
+    ]
+
+
+# --------------------------------------------------------------------------
+# Question Sets
+# --------------------------------------------------------------------------
+
+@router.get("/question-sets")
+async def list_question_sets(module: str = "") -> list[dict]:
+    """List all question sets, optionally filtered by module."""
+    from app.models.platform import QuestionSet
+    query = {}
+    if module:
+        query["module"] = module
+    sets = await QuestionSet.find(query).sort("created_at", -1).to_list()
+    return [
+        {
+            "id": s.id, "set_number": s.set_number, "module": s.module,
+            "question_ids": s.question_ids, "question_count": s.question_count,
+            "status": s.status, "usage_count": s.usage_count,
+            "last_used_at": s.last_used_at.isoformat() if s.last_used_at else None,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        }
+        for s in sets
+    ]
+
+
+@router.get("/question-sets/stats")
+async def question_set_stats() -> dict:
+    """Get question set availability per module."""
+    from app.models.platform import QuestionSet
+    from app.db import control_db
+    db = control_db()
+    coll_map = {
+        "reading": "reading_passages",
+        "listening": "listening_passages",
+        "writing": "writing_prompts",
+        "speaking": "task_items",
+        "quiz": "quiz_items",
+    }
+    stats = {}
+    for module, coll_name in coll_map.items():
+        total = await db[coll_name].count_documents({})
+        active_sets = await QuestionSet.find(
+            QuestionSet.module == module, QuestionSet.status == "active"
+        ).count()
+        draft_sets = await QuestionSet.find(
+            QuestionSet.module == module, QuestionSet.status == "draft"
+        ).count()
+        stats[module] = {
+            "total_questions": total,
+            "active_sets": active_sets,
+            "draft_sets": draft_sets,
+            "questions_available": total,
+        }
+    return stats
+
+
+# --------------------------------------------------------------------------
 # Prompt audio bank — browse & preview the pre-rendered TTS clips
 # --------------------------------------------------------------------------
 
@@ -988,3 +1483,204 @@ async def serve_prompt_audio(key: str) -> HttpResponse:
                                      "X-Content-Type-Options": "nosniff"})
 
     raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+
+
+# ---------------------------------------------------------------------------
+# Question Sets — management endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/sets")
+async def list_sets(module: str = "", status: str = "", company: str = "") -> list[dict]:
+    """List question sets with optional filters."""
+    from app.models.platform import QuestionSet, ExamTest
+    query = {}
+    if module:
+        query["module"] = module
+    if status:
+        query["status"] = status
+    if company:
+        query["company"] = company
+    raw = await QuestionSet.find(query).to_list(5000)
+    sets = sorted(raw, key=lambda s: s.set_number or "")
+
+    # Find which exam tests use each module+company combo
+    all_tests = await ExamTest.find({}).to_list(500)
+    test_map = {}
+    for t in all_tests:
+        key = (t.company or "")
+        if key not in test_map:
+            test_map[key] = []
+        test_map[key].append({"name": t.name, "slug": t.slug})
+
+    return [
+        {
+            "id": str(s.id), "set_number": s.set_number, "module": s.module,
+            "company": s.company, "question_count": s.question_count,
+            "question_numbers": s.question_numbers,
+            "status": s.status, "is_used": s.is_used,
+            "usage_count": s.usage_count,
+            "last_used_at": s.last_used_at.isoformat() if s.last_used_at else None,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "linked_tests": test_map.get(s.company or "", []),
+        }
+        for s in sets
+    ]
+
+
+@router.get("/sets/summary")
+async def sets_summary() -> dict:
+    """Summary of set availability per module."""
+    from app.set_engine import get_set_status_summary
+    return await get_set_status_summary()
+
+
+@router.get("/sets/summary-by-company")
+async def sets_summary_by_company() -> dict:
+    """Per-company summary of set availability per module."""
+    from app.db import control_db
+    db = control_db()
+    pipeline = [
+        {"$group": {"_id": {"company": "$company", "module": "$module"},
+                    "sets": {"$sum": 1}, "questions": {"$sum": "$question_count"}}},
+    ]
+    result = await db.question_sets.aggregate(pipeline).to_list(5000)
+    out: dict[str, dict] = {}
+    for r in result:
+        c = r["_id"].get("company") or ""
+        m = r["_id"].get("module") or ""
+        if c not in out:
+            out[c] = {}
+        out[c][m] = {"active_sets": r["sets"], "questions_available": r["questions"]}
+    return out
+
+
+@router.post("/sets/generate")
+async def generate_sets(module: str, company: str = "") -> dict:
+    """Manually trigger set generation for a module."""
+    from app.db import control_db
+    from app.set_engine import auto_create_sets
+    created = await auto_create_sets(module, control_db())
+    await audit_log.record_system("platform.generate_sets", entity="question_set", after={"module": module, "created": len(created)})
+    return {"created": len(created), "sets": created}
+
+
+@router.patch("/sets/{set_id}")
+async def update_set(set_id: str, body: dict) -> dict:
+    """Update a set's status."""
+    from app.models.platform import QuestionSet
+    s = await QuestionSet.get(set_id)
+    if not s:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Set not found")
+    if "status" in body:
+        s.status = body["status"]
+    s.updated_at = datetime.now(timezone.utc)
+    await s.save()
+    return {"ok": True, "status": s.status}
+
+
+@router.delete("/sets/{set_id}")
+async def delete_set(set_id: str) -> dict:
+    """Delete a draft set only."""
+    from app.models.platform import QuestionSet
+    s = await QuestionSet.get(set_id)
+    if not s:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Set not found")
+    if s.status == "active" and s.usage_count > 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete a set that has been used. Archive it instead.")
+    await s.delete()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Assessment assignment — for student attempt start
+# ---------------------------------------------------------------------------
+
+
+@router.post("/assign")
+async def assign_for_attempt(body: dict) -> dict:
+    """Assign random sets for a student attempt.
+
+    Body: {"assessment_id": "...", "company": ""}
+    Returns: {"assigned_sets": {...}, "assigned_questions": {...}}
+    """
+    from app.db import control_db
+    from app.set_engine import assign_sets_for_attempt
+    from app.models.platform import ExamTest
+
+    assessment_id = body.get("assessment_id", "")
+    company = body.get("company", "")
+
+    if assessment_id:
+        test = await ExamTest.get(assessment_id)
+        if not test:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Assessment not found")
+        config = {
+            "reading": test.reading_questions,
+            "writing": test.writing_questions,
+            "listening": test.listening_questions,
+            "speaking": test.speaking_questions,
+        }
+    else:
+        config = {"reading": 10, "writing": 10, "listening": 10, "speaking": 0}
+
+    try:
+        result = await assign_sets_for_attempt(config, company, control_db())
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Bulk import company questions
+# ---------------------------------------------------------------------------
+
+
+@router.post("/questions/bulk-import")
+async def bulk_import_company_questions(body: dict) -> dict:
+    """Bulk import company questions from JSON.
+
+    Body: {"company": "ADP", "sections": [{"name": "...", "questions": [{"question": "...", "options": [...], "correct_answer": "B", "explanation": "..."}]}]}
+    """
+    from app.db import control_db
+    from app.models.platform import Company
+    from app.set_engine import generate_question_number, auto_create_sets
+    import uuid
+
+    company_name = body.get("company", "")
+    sections = body.get("sections", [])
+
+    if not company_name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "company is required")
+
+    # Ensure company exists
+    existing = await Company.find_one(Company.name == company_name)
+    if not existing:
+        await Company(name=company_name, description=f"{company_name} Assessment", is_active=True).create()
+
+    db = control_db()
+    total = 0
+
+    for section in sections:
+        questions = section.get("questions", [])
+        for q in questions:
+            diff_str = q.get("difficulty", "medium")
+            difficulty_val = {"easy": 0.3, "medium": 0.5, "hard": 0.8, "medium_hard": 0.65}.get(diff_str, 0.5)
+            correct_map = {"A": 0, "B": 1, "C": 2, "D": 3}
+            correct_index = correct_map.get(q.get("correct_answer", "A"), 0)
+            qn = await generate_question_number("reading", db)
+            qi = QuizItem(
+                id=str(uuid.uuid4()), question_number=qn, category="reading_comprehension",
+                stem=q.get("question", ""), options=q.get("options", []),
+                correct_index=correct_index, explanation=q.get("explanation", ""),
+                company=company_name, difficulty=difficulty_val, seconds_allowed=30,
+                status="published",
+            )
+            await qi.create()
+            total += 1
+
+    await auto_create_sets("reading", db)
+    await audit_log.record_system("platform.bulk_import_questions", entity="quiz_item",
+                                   after={"company": company_name, "count": total})
+    return {"ok": True, "imported": total, "company": company_name}

@@ -36,6 +36,8 @@ export interface ProctorEvent {
   detail?: string;
   /** Severity: low / medium / high */
   severity: "low" | "medium" | "high";
+  /** Base64 screenshot captured at event time (for high-severity events) */
+  screenshot?: string;
 }
 
 export interface ProctorState {

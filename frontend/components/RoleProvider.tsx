@@ -72,12 +72,20 @@ export function RoleProvider({ children }: { children: ReactNode }) {
     setLoading(false);
   };
 
-  const signOut = () => {
+  const signOut = useCallback(() => {
+    // Fire-and-forget: record logout in audit log before clearing token
+    const token = localStorage.getItem("commiq.token");
+    if (token) {
+      fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1"}/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
     setToken(null);
     setUser(null);
     writeIdentity(null);
     router.replace("/");
-  };
+  }, [router]);
 
   return (
     <RoleCtx.Provider value={{ user, loading, refresh, signIn, signOut }}>

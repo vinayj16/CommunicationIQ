@@ -12,7 +12,7 @@ from beanie.operators import In, NE
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.deps import Principal, TenantModels, require_roles
-from app.models.platform import Tenant
+from app.models.platform import AuditLog, Tenant
 from app.models.tenant import (Attempt, CohortMember, ExamReview,
                                SimulationProfile, StudentFlag, User)
 from app.readiness import HIGH_RISK, NEEDS_TRAINING, NOT_STARTED, READY, band
@@ -530,3 +530,32 @@ async def export_results_csv(principal: Principal, models: TenantModels):
         content=content, media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="student-results.csv"'},
     )
+
+
+@router.get("/audit")
+async def tenant_audit_log(
+    principal: Principal,
+    limit: int = 100,
+) -> list[dict]:
+    """Login/logout audit events for this institution only."""
+    tid = principal.tenant_id
+    if not tid:
+        return []
+    cursor = AuditLog.find(
+        AuditLog.tenant_id == tid,
+        AuditLog.action.in_(["auth.login", "auth.logout"]),
+    ).sort(-AuditLog.at).limit(limit)
+    results = await cursor.to_list()
+    return [
+        {
+            "id": str(a.id),
+            "action": a.action,
+            "actor_label": a.actor_label,
+            "actor_type": a.actor_type,
+            "entity": a.entity,
+            "entity_id": a.entity_id,
+            "ip_address": getattr(a, 'ip_address', ''),
+            "at": a.at.isoformat(),
+        }
+        for a in results
+    ]

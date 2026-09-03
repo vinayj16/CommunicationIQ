@@ -269,7 +269,7 @@ function SkillTile({ module: m, starting, onStartSpeaking }: {
           <span className="text-[10px] text-muted">Quick mic check, then you speak.</span>
           <button className="btn btn-primary btn-sm ds-focus shrink-0"
                   disabled={starting} onClick={onStartSpeaking}>
-            {starting ? "Starting…" : "Start"}
+            {starting ? "Starting…" : <>Start <span aria-hidden>→</span></>}
           </button>
         </div>
       </div>

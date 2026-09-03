@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  AlertTriangle, ChevronDown, ChevronRight, Clock, Gauge, Loader2, Lock, Mic,
+  AlertTriangle, ChevronDown, ChevronRight, Clock, Gauge, Info, Loader2, Lock, Mic,
   Star, Volume2, Trophy,
 } from "lucide-react";
 import {
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui";
 import { useToast } from "@/components/Toast";
 import {
-  ApiError, attemptApi, type PreviousAttempt,
+  ApiError, API_BASE, getToken, attemptApi, type PreviousAttempt,
   type PracticeOutcome, type PrimaryDiagnosis, type ResponseMetrics,
   type ResultPriority,
 } from "@/lib/api";
@@ -438,6 +438,43 @@ function Result() {
       <Evidence evidence={data.evidence} />
 
       <Export csvUrl={attemptApi.exportCsvUrl(id)} reportUrl={attemptApi.reportUrl(id)} />
+
+      {/* Proctoring Evidence */}
+      {data.proctor_events && data.proctor_events.length > 0 && (
+        <Section title={`Proctoring Report (${data.proctor_strikes || 0} strikes)`} className="mb-4">
+          <div className="space-y-2">
+            {data.proctor_events.map((ev: any, i: number) => (
+              <div key={i} className="flex items-start gap-3 p-3 rounded-lg"
+                   style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="shrink-0 mt-0.5">
+                  {ev.severity === "high" ? (
+                    <AlertTriangle size={14} style={{ color: "var(--rag-red)" }} />
+                  ) : ev.severity === "medium" ? (
+                    <AlertTriangle size={14} style={{ color: "var(--rag-amber)" }} />
+                  ) : (
+                    <Info size={14} style={{ color: "var(--muted)" }} />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold capitalize">{ev.flag.replace(/_/g, " ")}</span>
+                    <Badge tone={ev.severity === "high" ? "var(--rag-red)" : ev.severity === "medium" ? "var(--rag-amber)" : "var(--muted)"}>
+                      {ev.severity}
+                    </Badge>
+                  </div>
+                  {ev.detail && <p className="text-[10px] text-muted mt-0.5">{ev.detail}</p>}
+                  <span className="text-[9px] text-muted">{new Date(ev.ts).toLocaleString()}</span>
+                </div>
+                {ev.screenshot && (
+                  <div className="shrink-0">
+                    <img src={ev.screenshot} alt="Evidence" className="w-20 h-15 object-cover rounded border" style={{ borderColor: "var(--border)" }} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {user?.role === "student" && (
         <StudentReview attemptId={data.attempt_id} />
@@ -945,8 +982,8 @@ function StudentReview({ attemptId }: { attemptId: string }) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/v1/student/attempts/${attemptId}/review`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem("commiq.token") || ""}` },
+        const res = await fetch(`${API_BASE}/student/attempts/${attemptId}/review`, {
+          headers: { Authorization: `Bearer ${getToken() || ""}` },
         });
         if (res.ok) {
           const data = await res.json();
@@ -966,7 +1003,7 @@ function StudentReview({ attemptId }: { attemptId: string }) {
     if (!selectedRating) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/v1/student/attempts/${attemptId}/review`, {
+      const res = await fetch(`${API_BASE}/student/attempts/${attemptId}/review`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1123,7 +1160,7 @@ function AdminReviewView({ attemptId }: { attemptId: string }) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/v1/student/attempts/${attemptId}/reviews`, {
+        const res = await fetch(`${API_BASE}/student/attempts/${attemptId}/reviews`, {
           headers: { Authorization: `Bearer ${localStorage.getItem("commiq.token") || ""}` },
         });
         if (res.ok && !cancelled) {

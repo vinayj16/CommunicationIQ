@@ -12,7 +12,8 @@ from app.security import TokenPrincipal
 
 async def record(principal: TokenPrincipal, action: str, *, entity: str = "",
                  entity_id: str = "", before: dict | None = None,
-                 after: dict | None = None, tenant_id: str | None = None) -> None:
+                 after: dict | None = None, tenant_id: str | None = None,
+                 ip_address: str = "") -> None:
     await AuditLog(
         actor_type="platform_user" if principal.is_platform else "tenant_user",
         actor_id=principal.user_id,
@@ -23,6 +24,7 @@ async def record(principal: TokenPrincipal, action: str, *, entity: str = "",
         entity_id=entity_id,
         before=before or {},
         after=after or {},
+        ip_address=ip_address,
     ).create()
 
 

@@ -198,6 +198,7 @@ export interface SessionUser {
   branch?: string;
   year_of_study?: number | null;
   l1_language?: string;
+  avatar_url?: string;
 }
 
 export interface ProfileSection {
@@ -327,7 +328,7 @@ export interface Attempt {
   id: string; profile_id: string; profile_name: string; attempt_number: number;
   status: string; mode: string; is_baseline: boolean; overall_score: number | null;
   started_at: string | null; submitted_at: string | null; scored_at: string | null;
-  ip_address: string;
+  ip_address: string; proctor_strikes?: number;
 }
 
 export interface Mastery {
@@ -359,6 +360,22 @@ export interface StudentHome {
   assigned_profiles: SimulationProfile[];
   recent_attempts: Attempt[];
   mastery: Mastery[];
+  current_plan: { id: string; name: string; features: string[]; max_questions: number; max_exams_per_day: number; has_proctoring: boolean } | null;
+  plan_expires_at: string | null;
+  tenant_slug: string;
+  exam_tests: ExamTest[];
+}
+
+export interface ExamTest {
+  id: string; name: string; description: string; slug: string;
+  duration_minutes: number;
+  reading_questions: number; listening_questions: number;
+  writing_questions: number; speaking_questions: number;
+  reading_seconds: number; listening_seconds: number;
+  writing_seconds: number; speaking_seconds: number;
+  allow_pause: boolean; show_timer: boolean; one_shot_audio: boolean;
+  is_baseline: boolean; company: string;
+  total_questions: number; total_parts: number;
 }
 
 export interface UserRow {
@@ -486,6 +503,7 @@ export interface GamificationConfig {
 export const api = {
   login: (email: string, password: string) =>
     post<{ token: string; user: SessionUser }>("/auth/login", { email, password }),
+  logout: () => post<{ ok: boolean }>("/auth/logout", {}),
   me: () => get<SessionUser>("/auth/me"),
   savePreferences: (prefs: Record<string, unknown>) =>
     post<{ ok: boolean }>("/auth/preferences", prefs),
@@ -599,6 +617,52 @@ export const api = {
   platformReviews: () => get<ReviewRow[]>("/platform/reviews"),
   platformGamification: () => get<GamificationConfig>("/platform/gamification"),
   narrationSettings: () => get<NarrationSettings>("/platform/narration/settings"),
+
+  // Plans
+  platformPlans: () => get<any[]>("/platform/plans"),
+  createPlan: (body: any) => post<{ id: string; ok: boolean }>("/platform/plans", body),
+  updatePlan: (id: string, body: any) => request<any>(`/platform/plans/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deletePlan: (id: string) => request<any>(`/platform/plans/${id}`, { method: "DELETE" }),
+  assignPlan: (planId: string, tenantId: string) => post<{ ok: boolean }>(`/platform/plans/${planId}/assign/${tenantId}`, {}),
+
+  // SMTP
+  platformSmtp: (tenantId?: string) => get<any>(`/platform/smtp${tenantId ? `?tenant_id=${tenantId}` : ""}`),
+  saveSmtp: (body: any) => post<{ ok: boolean }>("/platform/smtp", body),
+  testSmtp: (body: any) => post<{ ok: boolean; message: string }>("/platform/smtp/test", body),
+
+  // Payment
+  platformPayment: (gateway?: string) => get<any>(`/platform/payment${gateway ? `?gateway=${gateway}` : ""}`),
+  savePayment: (body: any) => post<{ ok: boolean }>("/platform/payment", body),
+
+  // Email Templates
+  platformEmailTemplates: () => get<any[]>("/platform/email-templates"),
+  createEmailTemplate: (body: any) => post<{ id: string; ok: boolean }>("/platform/email-templates", body),
+  updateEmailTemplate: (id: string, body: any) => request<any>(`/platform/email-templates/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteEmailTemplate: (id: string) => request<any>(`/platform/email-templates/${id}`, { method: "DELETE" }),
+
+  // Contact Messages
+  platformMessages: (status?: string) => get<any[]>(`/platform/messages${status ? `?status=${status}` : ""}`),
+  updateMessage: (id: string, body: any) => request<any>(`/platform/messages/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  replyToMessage: (id: string, text: string) => post<{ ok: boolean }>(`/platform/messages/${id}/reply`, { text }),
+  submitContactMessage: (body: { subject: string; body: string; priority?: string }) =>
+    post<{ id: string; ok: boolean }>("/messages", body),
+
+  // Exam Tests
+  platformExamTests: () => get<any[]>("/platform/exam-tests"),
+  createExamTest: (body: any) => post<{ id: string; ok: boolean }>("/platform/exam-tests", body),
+  updateExamTest: (id: string, body: any) => request<any>(`/platform/exam-tests/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteExamTest: (id: string) => request<any>(`/platform/exam-tests/${id}`, { method: "DELETE" }),
+
+  // Question Sets
+  platformQuestionSets: (module?: string) => get<any[]>(`/platform/question-sets${module ? `?module=${module}` : ""}`),
+  generateQuestionSets: (module: string, count: number) => post<any>(`/platform/question-sets/generate?module=${module}&count=${count}`, {}),
+  autoCreateSets: () => post<any>("/platform/question-sets/auto-create", {}),
+  updateQuestionSet: (id: string, body: any) => request<any>(`/platform/question-sets/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteQuestionSet: (id: string) => request<any>(`/platform/question-sets/${id}`, { method: "DELETE" }),
+  questionSetStats: () => get<any>("/platform/question-sets/stats"),
+
+  // Public plans (for student home page)
+  publicPlans: () => get<any[]>("/platform/plans"),
 };
 
 /** A stored secret, never returned whole. */
@@ -980,6 +1044,10 @@ export interface AttemptResult {
   previous: PreviousAttempt | null;
   priorities: ResultPriority[];
   practice: PracticeOutcome | null;
+  /** Proctoring events captured during the attempt */
+  proctor_events: Array<{ ts: string; flag: string; severity: string; detail?: string; screenshot?: string }>;
+  /** Number of high-severity proctoring strikes */
+  proctor_strikes: number;
 }
 
 /** The AI explanation and its job state. Content is populated only when
@@ -1080,8 +1148,11 @@ export const attemptApi = {
 
   /** Where the spreadsheet lives. A plain link, so the browser downloads it
    *  with the session it already has rather than us building a blob. */
-  exportCsvUrl: (attemptId: string) =>
-    `${API_BASE}${ATTEMPTS}/${attemptId}/export.csv`,
+  exportCsvUrl: (attemptId: string) => {
+    const t = getToken();
+    const base = `${API_BASE}${ATTEMPTS}/${attemptId}/export.csv`;
+    return t ? `${base}?token=${encodeURIComponent(t)}` : base;
+  },
 
   start: (profileId: string, mode: "practice" | "official" | "stress" = "practice",
           sourceAttemptId?: string) =>
@@ -1097,12 +1168,17 @@ export const attemptApi = {
   skip: (attemptId: string, responseId: string) =>
     post<{ skipped: boolean }>(`${ATTEMPTS}/${attemptId}/responses/${responseId}/skip`),
 
-  submit: (attemptId: string) => post<AttemptResult>(`${ATTEMPTS}/${attemptId}/submit`),
+  submit: (attemptId: string, proctorData?: { proctor_events?: any[]; proctor_strikes?: number }) =>
+    post<AttemptResult>(`${ATTEMPTS}/${attemptId}/submit`, proctorData || {}),
 
   result: (attemptId: string) => get<AttemptResult>(`${ATTEMPTS}/${attemptId}/result`),
 
   /** URL for the HTML report — opens in a new tab where it can be printed as PDF. */
-  reportUrl: (attemptId: string) => `${API_BASE}/report/${attemptId}`,
+  reportUrl: (attemptId: string) => {
+    const t = getToken();
+    const base = `${API_BASE}/report/${attemptId}`;
+    return t ? `${base}?token=${encodeURIComponent(t)}` : base;
+  },
 
   /** Fetch a recording as a blob URL.
    *

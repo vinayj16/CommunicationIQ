@@ -61,7 +61,7 @@ async def random_passage(principal: Principal, models: TenantModels,
     # Exclude passages already attempted by this user
     attempted = await models.ListeningAttempt.find(
         models.ListeningAttempt.user_id == principal.user_id
-    ).all()
+    ).to_list()
     attempted_ids = {a.passage_id for a in attempted}
     if attempted_ids:
         all_rows = [p for p in all_rows if p.id not in attempted_ids]
@@ -302,6 +302,10 @@ async def start(passage_id: str, principal: Principal,
     listening. It is disclosed rather than pretended away, and it is why this
     is practice rather than assessment. A recorded passage would close it.
     """
+    # Subscription check for general users
+    from app.subscription import require_subscription
+    await require_subscription(principal)
+
     passage = await models.ListeningPassage.get(passage_id)
     if passage is None or passage.status != "published":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such passage")

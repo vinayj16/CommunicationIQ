@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Check, UserPlus, X, Eye, EyeOff, Pencil, Key, Power } from "lucide-react";
+import { Check, UserPlus, X, Eye, EyeOff, Pencil, Key, Power, Upload, Users } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import {
   Avatar, Badge, ErrorNote, PageHeader, Section, Skeleton, Table, Tabs,
@@ -23,6 +23,7 @@ function People() {
   const [tab, setTab] = useState("student");
   const { data, loading, error, reload } = useData(() => api.tenantUsers(tab === "all" ? undefined : tab), [tab]);
   const [showCreate, setShowCreate] = useState(false);
+  const [showBulk, setShowBulk] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRow | null>(null);
   const [resettingUser, setResettingUser] = useState<UserRow | null>(null);
 
@@ -32,9 +33,14 @@ function People() {
         title="People"
         sub="Everyone in your institution. Create users, assign roles, and manage access."
         action={
-          <button className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
-            <UserPlus size={14} /> Add User
-          </button>
+          <div className="flex gap-2">
+            <button className="btn btn-primary btn-sm" onClick={() => setShowBulk(true)}>
+              <Users size={14} /> Bulk Users
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
+              <UserPlus size={14} /> Add User
+            </button>
+          </div>
         }
       />
 
@@ -51,7 +57,7 @@ function People() {
       <Section>
         {loading ? <Skeleton rows={6} /> : error ? <ErrorNote message={error} /> : (
           <Table
-            columns={["Name", "Email", "Role", "Roll", "Branch", "L1", "Status", ""]}
+            columns={["Name", "Email", "Role", "Roll", "Branch", "Status", ""]}
             rows={(data ?? []).map((u) => [
               <span key="n" className="flex items-center gap-2">
                 <Avatar name={u.full_name} size={22} />
@@ -61,7 +67,6 @@ function People() {
               ROLE_LABEL[u.role as keyof typeof ROLE_LABEL] ?? u.role,
               u.roll_number || "—",
               u.branch || "—",
-              u.l1_language || "—",
               u.active
                 ? <Badge key="s" tone="var(--rag-green)">Active</Badge>
                 : <Badge key="s" tone="var(--muted)">Inactive</Badge>,
@@ -91,6 +96,7 @@ function People() {
       </Section>
 
       {showCreate && <CreateUserModal onClose={() => setShowCreate(false)} onCreated={reload} />}
+      {showBulk && <BulkUsersModal onClose={() => setShowBulk(false)} onCreated={reload} />}
       {editingUser && <EditUserModal user={editingUser} onClose={() => setEditingUser(null)} onSaved={reload} />}
       {resettingUser && <ResetPasswordDialog user={resettingUser} onClose={() => setResettingUser(null)} />}
     </>
@@ -308,6 +314,123 @@ function ResetPasswordDialog({ user, onClose }: { user: UserRow; onClose: () => 
               </button>
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BulkUsersModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const { toast } = useToast();
+  const [lines, setLines] = useState("");
+  const [sharedPassword, setSharedPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ created: number; errors: string[] } | null>(null);
+  const [showPw, setShowPw] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!lines.trim() || !sharedPassword.trim()) return;
+    setBusy(true);
+    setResult(null);
+
+    // Parse lines: each line is either "Name, email" or just "email"
+    const entries = lines.trim().split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const parts = l.split(/[\t,;|]+/).map((s) => s.trim());
+        if (parts.length >= 2) return { full_name: parts[0], email: parts[1] };
+        return { full_name: parts[0].split("@")[0], email: parts[0] };
+      });
+
+    let created = 0;
+    const errors: string[] = [];
+
+    for (const entry of entries) {
+      try {
+        await adminApi.createUser({
+          full_name: entry.full_name,
+          email: entry.email,
+          role: "student",
+          password: sharedPassword,
+        });
+        created++;
+      } catch (err) {
+        errors.push(`${entry.email}: ${err instanceof Error ? err.message : "Failed"}`);
+      }
+    }
+
+    setResult({ created, errors });
+    setBusy(false);
+    if (created > 0) {
+      toast("success", `${created} user${created !== 1 ? "s" : ""} created successfully`);
+      onCreated();
+    }
+  }
+
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-bold">Bulk Create Users</h3>
+          <button onClick={onClose} className="btn btn-icon btn-ghost btn-sm"><X size={14} /></button>
+        </div>
+
+        <p className="text-xs text-muted leading-relaxed mb-3">
+          Enter one user per line. Format: <code>Name, email</code> or just <code>email</code>.
+          All users will be created as students with the same password.
+        </p>
+
+        {result ? (
+          <div className="space-y-3">
+            <div className="p-3 rounded-lg" style={{ background: "color-mix(in srgb, var(--rag-green) 10%, transparent)", border: "1px solid var(--rag-green)" }}>
+              <div className="text-sm font-bold" style={{ color: "var(--rag-green)" }}>{result.created} users created</div>
+            </div>
+            {result.errors.length > 0 && (
+              <div className="p-3 rounded-lg" style={{ background: "color-mix(in srgb, var(--rag-red) 10%, transparent)", border: "1px solid var(--rag-red)" }}>
+                <div className="text-xs font-semibold mb-1" style={{ color: "var(--rag-red)" }}>Errors:</div>
+                {result.errors.map((e, i) => (
+                  <div key={i} className="text-[11px] text-muted">{e}</div>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-end pt-2">
+              <button className="btn btn-primary btn-sm" onClick={onClose}>Done</button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-3">
+            <div>
+              <label className="ds-label">Users (one per line)</label>
+              <textarea className="ds-input" rows={8} value={lines}
+                onChange={(e) => setLines(e.target.value)}
+                placeholder={"Aarav Reddy, aarav@college.ac.in\nPriya Sharma, priya@college.ac.in\nRahul Verma, rahul@college.ac.in"}
+                style={{ fontFamily: "monospace", fontSize: 12 }} />
+              <div className="text-[10px] text-muted mt-1">
+                {lines.trim() ? lines.trim().split("\n").filter(Boolean).length : 0} users detected
+              </div>
+            </div>
+            <div>
+              <label className="ds-label">Shared Password</label>
+              <div className="relative">
+                <input className="ds-input pr-10" type={showPw ? "text" : "password"} required value={sharedPassword}
+                  onChange={(e) => setSharedPassword(e.target.value)}
+                  placeholder="Minimum 6 characters" minLength={6} />
+                <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-text"
+                        onClick={() => setShowPw(!showPw)} tabIndex={-1}>
+                  {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+              <div className="text-[10px] text-muted mt-1">All users will share this password. They can change it from Settings.</div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+              <button type="submit" className="btn btn-primary btn-sm" disabled={busy || !lines.trim() || !sharedPassword.trim()}>
+                {busy ? "Creating…" : `Create Users`}
+              </button>
+            </div>
+          </form>
         )}
       </div>
     </div>

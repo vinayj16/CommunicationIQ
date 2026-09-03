@@ -12,11 +12,13 @@ import {
   ApiError, practiceApi, type QuizItem, type QuizResult,
 } from "@/lib/api";
 import { FullscreenPrompt } from "@/components/FullscreenPrompt";
+import { ReviewCard } from "@/components/ReviewCard";
 import { FullscreenGuard } from "@/components/FullscreenGuard";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
 import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
 import { markAttempted } from "@/lib/setTracker";
+import { setExamMode } from "@/lib/examMode";
 
 export default function QuizPage() {
   return (
@@ -43,6 +45,16 @@ function Quiz() {
 
   const item = items[index];
 
+  const progress = useMemo(
+    () => (items.length ? (index / items.length) * 100 : 0), [index, items.length]);
+
+  const questionStatuses: ExamQuestionStatus[] = useMemo(() =>
+    items.map((q, i) => ({
+      id: q.id, index: i + 1, answered: answers[q.id] != null, selectedOption: answers[q.id] ?? null,
+    })),
+    [items, answers]
+  );
+
   async function autoStart() {
     setStage("loading");
     setError("");
@@ -59,6 +71,7 @@ function Quiz() {
       }
       setItems(next);
       setSeconds(next[0].seconds_allowed);
+      setExamMode(true);
       setStage("playing");
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not load a quiz";
@@ -175,6 +188,7 @@ function Quiz() {
       }
       toast("success", "Quiz submitted successfully");
       proctoring.stopCamera();
+      setExamMode(false);
       setStage("marked");
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not mark the quiz";
@@ -183,16 +197,6 @@ function Quiz() {
       setStage("intro");
     }
   }
-
-  const progress = useMemo(
-    () => (items.length ? (index / items.length) * 100 : 0), [index, items.length]);
-
-  const questionStatuses: ExamQuestionStatus[] = useMemo(() =>
-    items.map((q, i) => ({
-      id: q.id, index: i + 1, answered: answers[q.id] != null, selectedOption: answers[q.id] ?? null,
-    })),
-    [items, answers]
-  );
 
   if (stage === "loading") {
     return (
@@ -225,7 +229,6 @@ function Quiz() {
         timeRemaining={`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`}
         totalSecondsRemaining={seconds}
         onNavigate={navigateForward}
-        collapsed={true}
         onEndExam={() => {
           if (confirm("Are you sure you want to end this quiz?")) {
             void submit(answers);
@@ -406,6 +409,9 @@ function Marked({ result, onAgain }: { result: QuizResult; onAgain: () => void }
           three times running.
         </p>
       </div>
+
+      {/* Review & Rating Card */}
+      <ReviewCard attemptId={undefined} label="quiz" onNext={onAgain} onBack={onAgain} nextLabel="Another quiz →" />
     </>
   );
 }

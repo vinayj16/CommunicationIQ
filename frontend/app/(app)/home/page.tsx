@@ -1,15 +1,17 @@
 "use client";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowRight, BookOpen, Headphones, Lightbulb, LineChart,
-  Mic, PenLine, Play, Target, TrendingUp,
+  Mic, PenLine, Play, Target, TrendingUp, Package, Check,
 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { ErrorNote, PageHeader, Section, Skeleton, StatCard } from "@/components/ui";
 import { StreakChip, Workflow, type Step } from "@/components/Workflow";
-import { api, type StudentHome } from "@/lib/api";
+import { api, getToken, API_BASE, type StudentHome } from "@/lib/api";
 import { useData } from "@/lib/useData";
+import { useRole } from "@/components/RoleProvider";
 
 export default function StudentHomePage() {
   return (
@@ -97,6 +99,18 @@ function NextAction({ quest, baselineDone, consent, hasAttempts }: {
  */
 function Home() {
   const { data, loading, error } = useData(() => api.studentHome());
+  const { user } = useRole();
+  const isGeneral = !user?.tenant_slug || user.tenant_slug === "general";
+  const [plans, setPlans] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!isGeneral) return; // Only fetch plans for general (non-institution) students
+    const token = getToken();
+    fetch(`${API_BASE}/student/plans`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(r => r.ok ? r.json() : [])
+      .then(setPlans).catch(() => {});
+  }, [isGeneral]);
 
   if (loading) return <Skeleton rows={4} />;
   if (error) return <ErrorNote message={error} />;
@@ -124,6 +138,34 @@ function Home() {
       <div className="mb-3">
         <StreakChip days={data.streak.current_streak} countedToday={countedToday} />
       </div>
+
+      {/* Current Plan — only for general (non-institution) students */}
+      {isGeneral && data.current_plan ? (
+        <div className="ds-card p-3 mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Package size={14} style={{ color: "var(--primary)" }} />
+            <span className="text-xs font-bold">{data.current_plan.name}</span>
+            {data.plan_expires_at && (
+              <span className="text-[10px] text-muted">
+                Expires: {new Date(data.plan_expires_at).toLocaleDateString()}
+              </span>
+            )}
+          </div>
+          <a href="/plans" className="text-[10px] font-semibold" style={{ color: "var(--primary)" }}>
+            Upgrade
+          </a>
+        </div>
+      ) : isGeneral ? (
+        <div className="ds-card p-3 mb-3 flex items-center justify-between" style={{ borderColor: "var(--rag-amber)" }}>
+          <div className="flex items-center gap-2">
+            <Package size={14} style={{ color: "var(--rag-amber)" }} />
+            <span className="text-xs font-bold">Choose a plan to unlock all features</span>
+          </div>
+          <Link href="/plans" className="btn btn-primary btn-sm">
+            View Plans
+          </Link>
+        </div>
+      ) : null}
 
       <NextAction quest={data.quest} baselineDone={data.baseline_done}
                   consent={data.consent_given}
@@ -165,7 +207,7 @@ function Home() {
       <Section title="Recent activity" className="mt-4">
         {data.recent_attempts && data.recent_attempts.length > 0 ? (
           <div className="space-y-2">
-            {data.recent_attempts.slice(0, 3).map((a) => (
+            {data.recent_attempts.slice(0, 5).map((a) => (
               <div key={a.id} className="flex items-center gap-3 text-xs py-1.5 px-2 rounded-md hover:bg-surface2 transition-colors">
                 <span className="flex-1 font-medium truncate">{a.profile_name}</span>
                 {a.overall_score != null && (
@@ -174,13 +216,21 @@ function Home() {
                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
                   ${a.status === "scored"
                     ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                    : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"}`}>
+                    : a.status === "in_progress"
+                    ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                    : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"}`}>
                   {a.status}
                 </span>
                 {a.status === "scored" && (
                   <Link href={`/results/${a.id}`}
                         className="underline text-muted hover:text-foreground ds-focus shrink-0">
                     View Result
+                  </Link>
+                )}
+                {a.status === "in_progress" && (
+                  <Link href={`/attempt/${a.id}/run`}
+                        className="underline text-muted hover:text-foreground ds-focus shrink-0">
+                    Resume
                   </Link>
                 )}
               </div>
@@ -212,6 +262,58 @@ function Home() {
           </li>
         </ul>
       </div>
+
+      {/* Available Plans */}
+      {plans.length > 0 && (
+        <Section title="Available Plans" className="mt-4">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {plans.filter((p: any) => p.is_active).map((plan: any) => (
+              <div key={plan.id} className="ds-card p-4 relative">
+                {plan.price_monthly === 0 && (
+                  <span className="absolute top-2 right-2 px-2 py-0.5 rounded text-[9px] font-bold text-white"
+                    style={{ background: "var(--rag-green)" }}>
+                    FREE
+                  </span>
+                )}
+                <div className="flex items-center gap-2 mb-2">
+                  <Package size={16} style={{ color: "var(--primary)" }} />
+                  <span className="text-sm font-bold">{plan.name}</span>
+                </div>
+                {plan.description && (
+                  <p className="text-[11px] text-muted mb-3 leading-relaxed">{plan.description}</p>
+                )}
+                <div className="text-lg font-bold mb-2">
+                  {plan.price_monthly === 0 ? "Free" : `₹${plan.price_monthly}`}
+                  {plan.price_monthly > 0 && <span className="text-[10px] text-muted font-normal"> /month</span>}
+                </div>
+                <div className="space-y-1.5">
+                  {plan.features?.map((f: string, i: number) => (
+                    <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted">
+                      <Check size={10} style={{ color: "var(--rag-green)" }} />
+                      <span className="capitalize">{f}</span>
+                    </div>
+                  ))}
+                  {plan.max_questions > 0 && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted">
+                      <Check size={10} style={{ color: "var(--rag-green)" }} />
+                      Up to {plan.max_questions} questions/day
+                    </div>
+                  )}
+                  {plan.max_exams_per_day > 0 && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted">
+                      <Check size={10} style={{ color: "var(--rag-green)" }} />
+                      {plan.max_exams_per_day} exams/day
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="text-[10px] text-muted mt-2">
+            Need a custom plan? <Link href="/contact" className="underline">Contact us</Link>
+          </div>
+        </Section>
+      )}
 
       {data.recent_attempts.some((a) => a.status === "scored") && (
         <Section title="Your last test" className="mt-4">

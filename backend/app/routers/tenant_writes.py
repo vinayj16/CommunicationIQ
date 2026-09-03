@@ -272,6 +272,63 @@ async def create_user(body: CreateUserRequest, principal: Principal,
     return out
 
 
+@router.post("/users/bulk", status_code=status.HTTP_201_CREATED)
+async def bulk_create_users(body: dict, principal: Principal,
+                            models: TenantModels) -> dict:
+    """Bulk create users with a shared default password.
+
+    Body: {"users": [{"email": "...", "full_name": "...", "role": "student", ...}], "default_password": "optional"}
+    """
+    from app.models.platform import Tenant as TenantModel
+    from app.db import control_db
+
+    user_list = body.get("users", [])
+    default_pwd = body.get("default_password") or temporary_password()
+    created = []
+    errors = []
+
+    usage = await _seat_usage(models, principal.tenant_id or "")
+    remaining = usage.limit - usage.used
+
+    if len(user_list) > remaining:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"Only {remaining} seats remaining on the current plan")
+
+    for i, u in enumerate(user_list):
+        try:
+            email = (u.get("email") or "").lower().strip()
+            if not email:
+                errors.append({"index": i, "error": "Missing email"})
+                continue
+            if await models.User.find_one(models.User.email == email) is not None:
+                errors.append({"index": i, "error": f"Email {email} already exists"})
+                continue
+
+            user = User(
+                email=email,
+                full_name=u.get("full_name", email.split("@")[0]),
+                role=u.get("role", "student"),
+                password_hash=hash_password(default_pwd),
+                must_change_password=True,
+                roll_number=u.get("roll_number", ""),
+                branch=u.get("branch", ""),
+                year_of_study=u.get("year_of_study"),
+                l1_language=u.get("l1_language", ""),
+            )
+            await user.create()
+            created.append({"email": email, "id": user.id})
+        except Exception as e:
+            errors.append({"index": i, "error": str(e)})
+
+    if created:
+        await link_to_directory([c["email"] for c in created],
+                                principal.tenant_id or "", principal.tenant_slug or "")
+        await audit.record(principal, "user.bulk_created", entity="User",
+                           after={"count": len(created), "default_password_used": bool(body.get("default_password"))})
+
+    return {"ok": True, "created": len(created), "errors": errors, "total": len(user_list)}
+
+
 @router.patch("/users/{user_id}", response_model=UserOut)
 async def update_user(user_id: str, body: UpdateUserRequest, principal: Principal,
                       models: TenantModels) -> UserOut:

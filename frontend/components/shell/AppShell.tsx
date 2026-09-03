@@ -20,7 +20,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, toggleRail] = useRailCollapsed();
-  const sections = navFor(user?.role);
+  const sections = navFor(user?.role, user?.tenant_slug);
 
   // Branding comes off the session so it is present on first paint. A tenant
   // with none leaves these null and the product mark is used instead.
@@ -30,12 +30,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     tenantName: user?.tenant_name,
   };
 
+  // Hide rail during practice/exam sessions — the ExamSidebar takes over fullscreen
+  // Use negative lookahead to NOT match /writing-reviews, /reading-foo etc.
+  const isExamRoute = /^\/(writing(?!-)|reading(?!-)|listening(?!-)|quiz(?!-)|attempt\/)/.test(pathname);
+
   return (
     <div className="min-h-screen flex">
       <div className="bgfx" />
       <WordField />
 
-      {/* Rail — hidden on small screens, where the same nav appears as a sheet. */}
+      {/* Rail — hidden during exam routes and on small screens */}
+      {!isExamRoute && (
       <aside
         id="app-rail"
         className={`app-shell-nav hidden md:flex shrink-0 flex-col ${
@@ -46,8 +51,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <RailContent sections={sections} pathname={pathname} brand={brand}
                      collapsed={collapsed} />
       </aside>
+      )}
 
-      {mobileOpen && (
+      {!isExamRoute && mobileOpen && (
         <div className="fixed inset-0 z-40 md:hidden" onClick={() => setMobileOpen(false)}>
           <div className="absolute inset-0 bg-black/50" />
           <aside
@@ -62,7 +68,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
-      <div className="flex-1 min-w-0 flex flex-col">
+      <div className={`flex-1 min-w-0 flex flex-col ${isExamRoute ? "" : ""}`}>
+        {!isExamRoute && (
         <header className="app-header flex items-center gap-3 px-4 h-14 border-b border-border bg-surface">
           <button
             className="btn btn-icon btn-ghost md:hidden ds-focus"
@@ -105,17 +112,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           {user && <ProfileMenu user={user} onSignOut={signOut} />}
         </header>
+        )}
 
-        <main className="flex-1 p-4 md:p-6 max-w-[1400px] w-full animate-fade-up">
+        <main className={`flex-1 ${isExamRoute ? "p-0" : "p-4 md:p-6"} max-w-[1400px] w-full ${isExamRoute ? "" : "animate-fade-up"}`}>
           {children}
         </main>
 
+        {!isExamRoute && (
         <footer className="border-t border-border bg-surface/50 px-4 py-3 flex items-center justify-between text-[11px] text-muted shrink-0">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-foreground/70"><Link href="/" className="hover:text-foreground transition-colors">CommunicationIQ</Link></span>
             <span>&copy; {new Date().getFullYear()} Fluenzee. All rights reserved.</span>
           </div>
         </footer>
+        )}
       </div>
     </div>
   );
@@ -300,7 +310,7 @@ function ProfileMenu({ user, onSignOut }: { user: SessionUser; onSignOut: () => 
         aria-expanded={open}
         title="Profile"
       >
-        <Avatar name={user.full_name} size={26} />
+        <Avatar name={user.full_name} size={26} src={(user as any).avatar_url} />
         <div className="hidden sm:block leading-tight text-left">
           <div className="text-xs font-semibold truncate max-w-[12rem]">{user.full_name}</div>
           <div className="text-[10px] text-muted">{ROLE_LABEL[user.role] ?? user.role}</div>
@@ -313,7 +323,7 @@ function ProfileMenu({ user, onSignOut }: { user: SessionUser; onSignOut: () => 
           className="absolute right-0 mt-2 w-64 ds-card p-3 z-50 animate-fade-in"
         >
           <div className="flex items-center gap-2.5 pb-3 mb-2 border-b border-border">
-            <Avatar name={user.full_name} size={34} />
+            <Avatar name={user.full_name} size={34} src={(user as any).avatar_url} />
             <div className="leading-tight min-w-0">
               <div className="text-sm font-semibold truncate">{user.full_name}</div>
               <div className="text-[11px] text-muted truncate">{ROLE_LABEL[user.role] ?? user.role}</div>

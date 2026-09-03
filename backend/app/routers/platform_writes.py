@@ -38,7 +38,9 @@ from app.schemas import (CapabilityConfigRequest, GamificationConfigOut,
                          ProviderOut, ProviderRegisterRequest,
                          ProviderUpdateRequest,
                          TenantBranding, TenantCreateRequest, TenantOut,
-                         TenantProfile, TenantTypeOut, TenantUpdateRequest)
+                         TenantProfile, TenantTypeOut, TenantUpdateRequest,
+                         ContactMessageRequest, ContactMessageReplyRequest,
+                         ExamTestRequest)
 from app.security import hash_password
 from app.storage import get_storage
 
@@ -409,7 +411,7 @@ async def upload_logo(tenant_id: str, principal: Principal,
     get_storage().put(key, data, kind)
 
     branding = dict(tenant.branding or {})
-    branding["logo_url"] = f"/api/v1/platform/assets/{key}"
+    branding["logo_url"] = f"/platform/assets/{key}"
     tenant.branding = branding
     await tenant.save()
 
@@ -486,7 +488,7 @@ async def create_tenant(body: TenantCreateRequest, principal: Principal) -> Tena
 
     await create_tenant_schema(slug)
 
-    password = temporary_password()
+    password = body.admin_password.strip() if body.admin_password and body.admin_password.strip() else temporary_password()
     models = await ensure_tenant_models(slug)
     await models.User(email=body.admin_email.lower(), full_name=body.admin_name,
                       role="tenant_admin", password_hash=hash_password(password),
@@ -644,3 +646,506 @@ async def update_gamification(body: GamificationConfigRequest, principal: Princi
         leagues_enabled=row.leagues_enabled,
         max_engagement_notifications_per_day=row.max_engagement_notifications_per_day,
     )
+
+
+# ---------------------------------------------------------------------------
+# Subscription Plans
+# ---------------------------------------------------------------------------
+
+@router.post("/plans")
+async def create_plan(body: dict, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    import uuid
+    plan_id = str(uuid.uuid4())
+    doc = {
+        "_id": plan_id,
+        "name": body.get("name", ""),
+        "slug": body.get("slug", ""),
+        "description": body.get("description", ""),
+        "price_monthly": body.get("price_monthly", 0),
+        "price_yearly": body.get("price_yearly", 0),
+        "seat_limit": body.get("seat_limit", 50),
+        "features": body.get("features", []),
+        "max_questions": body.get("max_questions", 500),
+        "max_exams_per_day": body.get("max_exams_per_day", 10),
+        "has_proctoring": body.get("has_proctoring", True),
+        "has_analytics": body.get("has_analytics", True),
+        "has_custom_branding": body.get("has_custom_branding", False),
+        "has_api_access": body.get("has_api_access", False),
+        "is_active": body.get("is_active", True),
+        "is_default": body.get("is_default", False),
+    }
+    await db["plans"].insert_one(doc)
+    await audit.record(principal, "plan.created", entity="Plan", entity_id=plan_id)
+    return {"id": plan_id, "ok": True}
+
+
+@router.patch("/plans/{plan_id}")
+async def update_plan(plan_id: str, body: dict, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    updates = {k: v for k, v in body.items() if k not in ("_id", "id")}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db["plans"].update_one({"_id": plan_id}, {"$set": updates})
+    await audit.record(principal, "plan.updated", entity="Plan", entity_id=plan_id)
+    return {"ok": True}
+
+
+@router.delete("/plans/{plan_id}")
+async def delete_plan(plan_id: str, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    await db["plans"].delete_one({"_id": plan_id})
+    await audit.record(principal, "plan.deleted", entity="Plan", entity_id=plan_id)
+    return {"ok": True}
+
+
+@router.post("/plans/{plan_id}/assign/{tenant_id}")
+async def assign_plan(plan_id: str, tenant_id: str, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    await db["tenants"].update_one({"_id": tenant_id}, {"$set": {"plan_id": plan_id}})
+    await audit.record(principal, "plan.assigned", entity="Tenant", entity_id=tenant_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# SMTP Configuration
+# ---------------------------------------------------------------------------
+
+@router.post("/smtp")
+async def save_smtp(body: dict, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    tenant_id = body.get("tenant_id")  # null = platform default
+    existing = await db["smtp_configs"].find_one({"tenant_id": tenant_id})
+    doc = {
+        "host": body.get("host", ""),
+        "port": body.get("port", 587),
+        "username": body.get("username", ""),
+        "password": body.get("password", ""),
+        "from_email": body.get("from_email", ""),
+        "from_name": body.get("from_name", "CommunicationIQ"),
+        "use_tls": body.get("use_tls", True),
+        "use_ssl": body.get("use_ssl", False),
+        "is_active": body.get("is_active", True),
+        "tenant_id": tenant_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if existing:
+        await db["smtp_configs"].update_one({"_id": existing["_id"]}, {"$set": doc})
+    else:
+        import uuid
+        doc["_id"] = str(uuid.uuid4())
+        await db["smtp_configs"].insert_one(doc)
+    await audit.record(principal, "smtp.configured", entity="SmtpConfig")
+    return {"ok": True}
+
+
+@router.post("/smtp/test")
+async def test_smtp(body: dict, principal: Principal) -> dict:
+    """Send a test email to verify SMTP configuration."""
+    from app.email_sender import send_email
+    to = body.get("to_email", "")
+    if not to:
+        return {"ok": False, "message": "No test email address provided"}
+    ok = await send_email(
+        to_email=to,
+        subject="CommunicationIQ — SMTP Test",
+        body_html="<h2>SMTP configured successfully!</h2><p>Your email system is working.</p>",
+        body_text="SMTP configured successfully! Your email system is working.",
+        tenant_id=body.get("tenant_id"),
+    )
+    return {"ok": ok, "message": "Test email sent" if ok else "Failed to send — check SMTP settings"}
+
+
+# ---------------------------------------------------------------------------
+# Payment Gateway Configuration
+# ---------------------------------------------------------------------------
+
+@router.post("/payment")
+async def save_payment_config(body: dict, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    gateway = body.get("gateway", "stripe")
+    existing = await db["payment_configs"].find_one({"gateway": gateway})
+    doc = {
+        "gateway": gateway,
+        "test_mode": body.get("test_mode", True),
+        "stripe_publishable": body.get("stripe_publishable", ""),
+        "stripe_secret": body.get("stripe_secret", ""),
+        "stripe_webhook_secret": body.get("stripe_webhook_secret", ""),
+        "razorpay_key_id": body.get("razorpay_key_id", ""),
+        "razorpay_key_secret": body.get("razorpay_key_secret", ""),
+        "currency": body.get("currency", "INR"),
+        "is_active": body.get("is_active", False),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if existing:
+        await db["payment_configs"].update_one({"_id": existing["_id"]}, {"$set": doc})
+    else:
+        import uuid
+        doc["_id"] = str(uuid.uuid4())
+        await db["payment_configs"].insert_one(doc)
+    await audit.record(principal, "payment.configured", entity="PaymentConfig")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Email Templates
+# ---------------------------------------------------------------------------
+
+@router.post("/email-templates")
+async def create_email_template(body: dict, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    import uuid
+    tpl_id = str(uuid.uuid4())
+    doc = {
+        "_id": tpl_id,
+        "key": body.get("key", ""),
+        "name": body.get("name", ""),
+        "subject": body.get("subject", ""),
+        "body_html": body.get("body_html", ""),
+        "body_text": body.get("body_text", ""),
+        "category": body.get("category", "transactional"),
+        "is_active": body.get("is_active", True),
+    }
+    await db["email_templates"].insert_one(doc)
+    await audit.record(principal, "template.created", entity="EmailTemplate", entity_id=tpl_id)
+    return {"id": tpl_id, "ok": True}
+
+
+@router.patch("/email-templates/{template_id}")
+async def update_email_template(template_id: str, body: dict, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    updates = {k: v for k, v in body.items() if k not in ("_id", "id")}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db["email_templates"].update_one({"_id": template_id}, {"$set": updates})
+    await audit.record(principal, "template.updated", entity="EmailTemplate", entity_id=template_id)
+    return {"ok": True}
+
+
+@router.delete("/email-templates/{template_id}")
+async def delete_email_template(template_id: str, principal: Principal) -> dict:
+    from app.db import control_db
+    db = control_db()
+    await db["email_templates"].delete_one({"_id": template_id})
+    await audit.record(principal, "template.deleted", entity="EmailTemplate", entity_id=template_id)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Contact Messages
+# --------------------------------------------------------------------------
+
+@router.post("/messages")
+async def submit_contact_message(body: ContactMessageRequest,
+                                 principal: Principal) -> dict:
+    """Submit a contact message from any user to super admins."""
+    from app.models.platform import ContactMessage
+    msg = ContactMessage(
+        from_user_id=principal.user_id,
+        from_email=principal.email,
+        from_name=principal.full_name or "",
+        from_role=principal.role,
+        from_tenant_id=getattr(principal, "tenant_id", None),
+        subject=body.subject,
+        body=body.body,
+        priority=body.priority,
+    )
+    await msg.create()
+    await audit.record(principal, "contact.submitted", entity="ContactMessage",
+                       entity_id=msg.id)
+    return {"id": msg.id, "ok": True}
+
+
+@router.patch("/messages/{message_id}")
+async def update_contact_message(message_id: str, body: dict,
+                                 principal: Principal) -> dict:
+    """Update message status (super admin)."""
+    from app.models.platform import ContactMessage
+    msg = await ContactMessage.get(message_id)
+    if not msg:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Message not found")
+    if "status" in body:
+        msg.status = body["status"]
+    if "priority" in body:
+        msg.priority = body["priority"]
+    msg.updated_at = datetime.now(timezone.utc)
+    await msg.save()
+    await audit.record(principal, "contact.updated", entity="ContactMessage",
+                       entity_id=message_id, after={"status": msg.status})
+    return {"ok": True}
+
+
+@router.post("/messages/{message_id}/reply")
+async def reply_to_message(message_id: str, body: ContactMessageReplyRequest,
+                           principal: Principal) -> dict:
+    """Reply to a contact message (super admin)."""
+    from app.models.platform import ContactMessage
+    msg = await ContactMessage.get(message_id)
+    if not msg:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Message not found")
+    msg.replies.append({
+        "from": principal.full_name or "Admin",
+        "text": body.text,
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    msg.updated_at = datetime.now(timezone.utc)
+    await msg.save()
+    await audit.record(principal, "contact.replied", entity="ContactMessage",
+                       entity_id=message_id)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Exam Tests (Custom tests created by super admin)
+# --------------------------------------------------------------------------
+
+@router.post("/exam-tests", status_code=status.HTTP_201_CREATED)
+async def create_exam_test(body: ExamTestRequest, principal: Principal) -> dict:
+    """Create a new custom exam test."""
+    from app.models.platform import ExamTest
+    import re as _re
+    slug = _re.sub(r"[^a-z0-9]+", "-", body.name.lower()).strip("-")
+    test = ExamTest(
+        name=body.name, description=body.description, slug=slug,
+        duration_minutes=body.duration_minutes,
+        reading_questions=body.reading_questions,
+        listening_questions=body.listening_questions,
+        writing_questions=body.writing_questions,
+        speaking_questions=body.speaking_questions,
+        reading_seconds=body.reading_seconds,
+        listening_seconds=body.listening_seconds,
+        writing_seconds=body.writing_seconds,
+        speaking_seconds=body.speaking_seconds,
+        allow_pause=body.allow_pause, show_timer=body.show_timer,
+        one_shot_audio=body.one_shot_audio, is_active=body.is_active,
+        is_baseline=body.is_baseline, company=body.company,
+        question_ids=body.question_ids,
+    )
+    await test.create()
+    await audit.record(principal, "exam_test.created", entity="ExamTest",
+                       entity_id=test.id, after={"name": test.name})
+    # Auto-sync SimulationProfile for this exam test
+    try:
+        from app.main import _sync_exam_test_profiles
+        await _sync_exam_test_profiles()
+    except Exception:
+        pass
+    return {"id": test.id, "ok": True}
+
+
+@router.patch("/exam-tests/{test_id}")
+async def update_exam_test(test_id: str, body: ExamTestRequest,
+                           principal: Principal) -> dict:
+    """Update an exam test."""
+    from app.models.platform import ExamTest
+    test = await ExamTest.get(test_id)
+    if not test:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Test not found")
+    for field in ["name", "description", "duration_minutes",
+                  "reading_questions", "listening_questions",
+                  "writing_questions", "speaking_questions",
+                  "reading_seconds", "listening_seconds",
+                  "writing_seconds", "speaking_seconds",
+                  "allow_pause", "show_timer", "one_shot_audio",
+                  "is_active", "is_baseline", "company", "question_ids"]:
+        if hasattr(body, field):
+            setattr(test, field, getattr(body, field))
+    test.updated_at = datetime.now(timezone.utc)
+    await test.save()
+    await audit.record(principal, "exam_test.updated", entity="ExamTest",
+                       entity_id=test_id)
+    # Auto-sync SimulationProfile for this exam test
+    try:
+        from app.main import _sync_exam_test_profiles
+        await _sync_exam_test_profiles()
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@router.delete("/exam-tests/{test_id}")
+async def delete_exam_test(test_id: str, principal: Principal) -> dict:
+    """Delete an exam test."""
+    from app.models.platform import ExamTest
+    await ExamTest.delete(ExamTest.id == test_id)
+    await audit.record(principal, "exam_test.deleted", entity="ExamTest",
+                       entity_id=test_id)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Question Sets (exactly 10 questions per set)
+# --------------------------------------------------------------------------
+
+@router.post("/question-sets/generate", status_code=status.HTTP_201_CREATED)
+async def generate_question_sets(module: str, principal: Principal, count: int = 1) -> dict:
+    """Auto-generate question sets from the question bank for a module.
+    Each set contains exactly 10 questions from the same module.
+    """
+    import re as _re
+    from app.models.platform import QuestionSet
+    from app.db import control_db
+
+    if module not in ("reading", "writing", "listening", "speaking", "quiz"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid module")
+
+    db = control_db()
+    # Map module to collection
+    coll_map = {
+        "reading": "reading_passages",
+        "listening": "listening_passages",
+        "writing": "writing_prompts",
+        "speaking": "task_items",
+        "quiz": "quiz_items",
+    }
+    coll_name = coll_map[module]
+    coll = db[coll_name]
+
+    # Count existing questions
+    total = await coll.count_documents({})
+    needed = count * 10
+    if total < needed:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"Need {needed} {module} questions but only {total} exist")
+
+    # Count existing sets to determine numbering
+    existing_count = await QuestionSet.find(QuestionSet.module == module).count()
+
+    created_sets = []
+    for i in range(count):
+        set_num = existing_count + i + 1
+        prefix = module[:4].upper()
+        set_number = f"{prefix}-SET-{set_num:03d}"
+
+        # Find questions not already in an active set for this module
+        active_sets = await QuestionSet.find(
+            QuestionSet.module == module,
+            QuestionSet.status.in_(["active", "draft"]),
+        ).to_list()
+        used_ids = set()
+        for s in active_sets:
+            used_ids.update(s.question_ids)
+
+        # Get eligible questions
+        query = {"_id": {"$nin": list(used_ids)}} if used_ids else {}
+        cursor = coll.find(query).limit(10)
+        questions = await cursor.to_list()
+
+        if len(questions) < 10:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"Not enough unused {module} questions for set {set_num}")
+
+        q_ids = [str(q["_id"]) for q in questions]
+
+        qs = QuestionSet(
+            set_number=set_number,
+            module=module,
+            question_ids=q_ids,
+            question_count=10,
+            status="draft",
+        )
+        await qs.create()
+        created_sets.append({"id": qs.id, "set_number": set_number, "module": module})
+
+    await audit.record(principal, "question_sets.generated", entity="QuestionSet",
+                       after={"module": module, "count": len(created_sets)})
+    return {"created": len(created_sets), "sets": created_sets, "ok": True}
+
+
+@router.patch("/question-sets/{set_id}")
+async def update_question_set(set_id: str, body: dict, principal: Principal) -> dict:
+    """Update a question set (status, etc.)."""
+    from app.models.platform import QuestionSet
+    qs = await QuestionSet.get(set_id)
+    if not qs:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Set not found")
+    if "status" in body:
+        qs.status = body["status"]
+    qs.updated_at = datetime.now(timezone.utc)
+    await qs.save()
+    await audit.record(principal, "question_set.updated", entity="QuestionSet",
+                       entity_id=set_id, after={"status": qs.status})
+    return {"ok": True}
+
+
+@router.delete("/question-sets/{set_id}")
+async def delete_question_set(set_id: str, principal: Principal) -> dict:
+    """Delete a question set (only if draft)."""
+    from app.models.platform import QuestionSet
+    qs = await QuestionSet.get(set_id)
+    if not qs:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Set not found")
+    if qs.status not in ("draft", "inactive"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Can only delete draft/inactive sets")
+    await QuestionSet.delete(QuestionSet.id == set_id)
+    await audit.record(principal, "question_set.deleted", entity="QuestionSet", entity_id=set_id)
+    return {"ok": True}
+
+
+@router.post("/question-sets/auto-create")
+async def auto_create_sets(principal: Principal) -> dict:
+    """Auto-create sets for all modules where we have enough questions (10+)."""
+    from app.models.platform import QuestionSet
+    from app.db import control_db
+
+    db = control_db()
+    coll_map = {
+        "reading": "reading_passages",
+        "listening": "listening_passages",
+        "writing": "writing_prompts",
+        "speaking": "task_items",
+        "quiz": "quiz_items",
+    }
+    results = {}
+    for module, coll_name in coll_map.items():
+        coll = db[coll_name]
+        total = await coll.count_documents({})
+        # Count existing sets for this module
+        existing = await QuestionSet.find(QuestionSet.module == module).count()
+        # How many sets of 10 can we make from unused questions?
+        active_sets = await QuestionSet.find(
+            QuestionSet.module == module,
+            QuestionSet.status.in_(["active", "draft"]),
+        ).to_list()
+        used_ids = set()
+        for s in active_sets:
+            used_ids.update(s.question_ids)
+        available = total - len(used_ids)
+        can_create = available // 10
+        sets_to_create = min(can_create, 50)  # cap at 50 per call
+
+        if sets_to_create <= 0:
+            results[module] = {"total_questions": total, "existing_sets": existing, "created": 0}
+            continue
+
+        prefix = module[:4].upper()
+        created = []
+        for i in range(sets_to_create):
+            set_num = existing + i + 1
+            set_number = f"{prefix}-SET-{set_num:03d}"
+
+            query = {"_id": {"$nin": list(used_ids)}} if used_ids else {}
+            questions = await coll.find(query).limit(10).to_list()
+            if len(questions) < 10:
+                break
+            q_ids = [str(q["_id"]) for q in questions]
+            used_ids.update(q_ids)
+
+            qs = QuestionSet(
+                set_number=set_number, module=module,
+                question_ids=q_ids, question_count=10, status="active",
+            )
+            await qs.create()
+            created.append(set_number)
+
+        results[module] = {"total_questions": total, "existing_sets": existing, "created": len(created), "sets": created}
+
+    await audit.record(principal, "question_sets.auto_created", entity="QuestionSet",
+                       after=results)
+    return {"results": results, "ok": True}

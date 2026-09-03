@@ -32,8 +32,9 @@ _REJECT = "Incorrect email or password"
 async def signup(body: SignupRequest, request: Request) -> LoginResponse:
     """Student self-service registration.
 
-    Validates the email domain against the institution's registered domain.
-    Only emails matching the domain can sign up for that institution.
+    If the email domain matches a registered institution, the user is linked
+    to that institution. Otherwise, the user is placed in a general pool and
+    must pay to access premium features.
     """
     email = body.email.lower().strip()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -44,16 +45,82 @@ async def signup(body: SignupRequest, request: Request) -> LoginResponse:
 
     # Find the tenant by domain
     tenant = await Tenant.find_one(Tenant.domain == domain)
-    if tenant is None or tenant.status in {"suspended", "closed"}:
+
+    # General registration: no matching domain → create in general pool
+    if tenant is None:
+        # Check if email already exists globally
+        dir_entry = await TenantUserDirectory.find(
+            TenantUserDirectory.email == email).first_or_none()
+        if dir_entry is not None and dir_entry.active:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "An account with this email already exists")
+
+        # Create a "general" tenant if it doesn't exist
+        general_tenant = await Tenant.find_one(Tenant.slug == "general")
+        if general_tenant is None:
+            general_tenant = Tenant(
+                name="General Users", slug="general",
+                domain="", tenant_type="other", status="active",
+                seat_limit=10000,
+            )
+            await general_tenant.create()
+            from app.provisioning import create_tenant_schema
+            await create_tenant_schema("general")
+
+        tenant = general_tenant
+        tenant_models = await ensure_tenant_models(tenant.slug)
+
+        # Check if user already exists in general tenant
+        from app.db import client as _client, CONTROL_DB_NAME as _DB
+        _users_coll = _client[_DB]["users"]
+        existing = await _users_coll.find_one({"email": email, "tenant_id": tenant.id})
+        if existing is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "An account with this email already exists")
+
+        user = tenant_models.User(
+            tenant_id=tenant.id, email=email, full_name=body.full_name,
+            role="student",
+            password_hash=hash_password(body.password),
+            must_change_password=False,
+        )
+        await user.create()
+
+        if dir_entry is None:
+            await TenantUserDirectory(email=email, tenant_id=tenant.id,
+                                       tenant_slug=tenant.slug).create()
+        else:
+            dir_entry.tenant_id = tenant.id
+            dir_entry.tenant_slug = tenant.slug
+            dir_entry.active = True
+            await dir_entry.save()
+
+        principal = TokenPrincipal(
+            user_id=user.id, email=user.email, full_name=user.full_name,
+            role="student", scope="tenant",
+            tenant_id=tenant.id, tenant_slug=tenant.slug,
+        )
+        await audit.record(principal, "auth.signup", entity="User",
+                           entity_id=user.id, tenant_id=tenant.id)
+        return LoginResponse(
+            token=create_token(principal),
+            user=SessionUser(
+                id=user.id, email=user.email, full_name=user.full_name,
+                role="student", scope="tenant",
+                tenant_id=tenant.id, tenant_slug=tenant.slug,
+                tenant_name=tenant.name,
+                must_change_password=False, preferred_theme="campus",
+            ),
+        )
+
+    # Domain matched an institution
+    if tenant.status in {"suspended", "closed"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "No institution found for this email domain. "
                             "Contact your institution admin to register.")
 
     tenant_models = await ensure_tenant_models(tenant.slug)
 
-    # Check if email already exists in this tenant (use raw Motor to scope
-    # the query by tenant_id, since the Beanie User model may not have the
-    # field on all existing documents yet)
     from app.db import client as _client, CONTROL_DB_NAME as _DB
     _users_coll = _client[_DB]["users"]
     existing = await _users_coll.find_one({"email": email, "tenant_id": tenant.id})
@@ -61,14 +128,12 @@ async def signup(body: SignupRequest, request: Request) -> LoginResponse:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "An account with this email already exists")
 
-    # Check directory
     dir_entry = await TenantUserDirectory.find(
         TenantUserDirectory.email == email).first_or_none()
     if dir_entry is not None and dir_entry.active:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "An account with this email already exists")
 
-    # Create the user
     user = tenant_models.User(
         tenant_id=tenant.id, email=email, full_name=body.full_name, role="student",
         password_hash=hash_password(body.password),
@@ -76,7 +141,6 @@ async def signup(body: SignupRequest, request: Request) -> LoginResponse:
     )
     await user.create()
 
-    # Add to directory
     if dir_entry is None:
         await TenantUserDirectory(email=email, tenant_id=tenant.id,
                                    tenant_slug=tenant.slug).create()
@@ -100,8 +164,7 @@ async def signup(body: SignupRequest, request: Request) -> LoginResponse:
             id=user.id, email=user.email, full_name=user.full_name,
             role="student", scope="tenant",
             tenant_id=tenant.id, tenant_slug=tenant.slug, tenant_name=tenant.name,
-            must_change_password=False,
-            preferred_theme="campus",
+            must_change_password=False, preferred_theme="campus",
         ),
     )
 
@@ -167,8 +230,43 @@ async def save_preferences(body: dict, principal: Principal) -> dict:
             user.year_of_study = body["year_of_study"]
         if "l1_language" in body:
             user.l1_language = body["l1_language"]
+        if "avatar_url" in body:
+            user.avatar_url = body["avatar_url"]
         await user.save()
     return {"ok": True}
+
+
+@router.post("/avatar")
+async def upload_avatar(file: "UploadFile", principal: Principal) -> dict:
+    """Upload a student avatar image."""
+    import uuid as _uuid, os
+    from app.models.platform import ensure_tenant_models, Tenant
+    ext = os.path.splitext(file.filename or "avatar.jpg")[1] or ".jpg"
+    key = f"avatars/{_uuid.uuid4().hex}{ext}"
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "avatars")
+    os.makedirs(upload_dir, exist_ok=True)
+    dest = os.path.join(upload_dir, key.replace("avatars/", ""))
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Avatar must be under 5 MB")
+    with open(dest, "wb") as f:
+        f.write(content)
+    avatar_url = f"/api/v1/platform/assets/{key}"
+    if principal.scope == "platform":
+        from app.models.platform import PlatformUser
+        staff = await PlatformUser.get(principal.user_id)
+        if staff:
+            staff.avatar_url = avatar_url
+            await staff.save()
+    else:
+        tenant = await Tenant.get(principal.tenant_id or "")
+        if tenant:
+            models = await ensure_tenant_models(tenant.slug)
+            user = await models.User.get(principal.user_id)
+            if user:
+                user.avatar_url = avatar_url
+                await user.save()
+    return {"avatar_url": avatar_url, "ok": True}
 
 
 def _branding_fields(tenant) -> dict:
@@ -217,7 +315,7 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
         )
         await _db["platform_users"].update_one(
             {"_id": staff_doc["_id"]}, {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat()}})
-        await audit.record(principal, "auth.login", entity="PlatformUser", entity_id=staff_id)
+        await audit.record(principal, "auth.login", entity="PlatformUser", entity_id=staff_id, ip_address=client_ip)
         return LoginResponse(
             token=create_token(principal),
             user=SessionUser(
@@ -260,7 +358,22 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
         tenant_id=tenant_id, tenant_slug=tenant_slug,
     )
     await audit.record(principal, "auth.login", entity="User",
-                       entity_id=user_id, tenant_id=tenant_id)
+                       entity_id=user_id, tenant_id=tenant_id, ip_address=client_ip)
+
+    # Send first-login welcome email (fire-and-forget)
+    if not user_doc.get("last_login_at"):
+        import asyncio
+        async def _send_welcome():
+            try:
+                from app.email_sender import send_template_email
+                await send_template_email(
+                    "first_login", email,
+                    {"name": user_doc.get("full_name", ""), "email": email},
+                    tenant_id=tenant_id,
+                )
+            except Exception:
+                pass
+        asyncio.create_task(_send_welcome())
 
     branding = _branding_fields(tenant_doc)
     return LoginResponse(
@@ -278,6 +391,18 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
     )
 
 
+@router.post("/logout")
+async def logout(principal: Principal) -> dict:
+    """Record logout in audit log. Client clears token locally."""
+    await audit.record(
+        principal, "auth.logout",
+        entity="PlatformUser" if principal.is_platform else "User",
+        entity_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+    )
+    return {"ok": True}
+
+
 @router.get("/me", response_model=SessionUser)
 async def me(principal: Principal) -> SessionUser:
     from app.db import client, CONTROL_DB_NAME
@@ -291,6 +416,7 @@ async def me(principal: Principal) -> SessionUser:
             id=str(staff["_id"]), email=staff.get("email", ""),
             full_name=staff.get("full_name", ""),
             role=staff.get("role", "super_admin"), scope="platform",
+            avatar_url=staff.get("avatar_url", ""),
         )
 
     if not principal.tenant_slug:
@@ -313,4 +439,5 @@ async def me(principal: Principal) -> SessionUser:
         **_branding_fields(tenant_doc),
         must_change_password=user_doc.get("must_change_password", False),
         preferred_theme=user_doc.get("preferred_theme", "campus"),
+        avatar_url=user_doc.get("avatar_url", ""),
     )

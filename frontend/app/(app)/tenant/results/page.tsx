@@ -293,7 +293,7 @@ function StudentAttemptHistory({ studentId, student }: { studentId: string; stud
 
           {/* Attempts list */}
           <Table
-            columns={["Assessment", "Attempt", "Status", "Score", "Started", "Duration", "IP", "Actions"]}
+            columns={["Assessment", "Attempt", "Status", "Score", "Started", "Duration", "IP", "Strikes", "Actions"]}
             rows={(attempts.data ?? []).map((a) => {
               const isOpen = expandedAttempt === a.id;
               const duration = a.started_at && a.submitted_at
@@ -326,6 +326,11 @@ function StudentAttemptHistory({ studentId, student }: { studentId: string; stud
                 </span>,
                 <span key="ip" className="text-[10px] text-muted font-mono">
                   {a.ip_address || "—"}
+                </span>,
+                <span key="strikes" className="text-[10px] text-muted font-mono">
+                  {a.proctor_strikes != null && a.proctor_strikes > 0 ? (
+                    <span className="text-red-500 font-semibold">{a.proctor_strikes} strikes</span>
+                  ) : "—"}
                 </span>,
                 <div key="actions" className="flex items-center gap-1.5">
                   {a.status === "scored" && (

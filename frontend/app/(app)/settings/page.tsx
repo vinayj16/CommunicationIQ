@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Check, Lock, Eye, EyeOff } from "lucide-react";
+import { Check, Lock, Eye, EyeOff, Camera, Loader2 } from "lucide-react";
 import { useRole } from "@/components/RoleProvider";
 import { THEMES, THEME_GROUPS, useTheme, type ThemeId } from "@/components/ThemeProvider";
 import { PageHeader, Section } from "@/components/ui";
@@ -20,12 +20,25 @@ export default function SettingsPage() {
       />
 
       <Section title="Account" className="mb-4">
-        <dl className="grid sm:grid-cols-2 gap-3 text-xs">
-          <Field label="Name" value={user?.full_name ?? "—"} />
-          <Field label="Email" value={user?.email ?? "—"} />
-          <Field label="Role" value={user ? ROLE_LABEL[user.role] ?? user.role : "—"} />
-          <Field label="Institution" value={user?.tenant_name ?? "Platform console"} />
-        </dl>
+        <div className="flex items-center gap-4 mb-4">
+          <div className="relative group">
+            <div className="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold overflow-hidden"
+              style={{ background: "var(--brand-grad)", color: "white" }}>
+              {user?.avatar_url ? (
+                <img src={user.avatar_url} alt="Avatar" className="w-full h-full object-cover" />
+              ) : (
+                <span>{user?.full_name?.charAt(0) || user?.email?.charAt(0) || "U"}</span>
+              )}
+            </div>
+            <AvatarUploadButton />
+          </div>
+          <dl className="grid sm:grid-cols-2 gap-3 text-xs flex-1">
+            <Field label="Name" value={user?.full_name ?? "—"} />
+            <Field label="Email" value={user?.email ?? "—"} />
+            <Field label="Role" value={user ? ROLE_LABEL[user.role] ?? user.role : "—"} />
+            <Field label="Institution" value={user?.tenant_name ?? "Platform console"} />
+          </dl>
+        </div>
       </Section>
 
       <Section title="Change Password" className="mb-4">
@@ -249,6 +262,53 @@ function NotificationPrefs() {
         <span className="text-xs">Exam deadline alerts</span>
       </label>
     </div>
+  );
+}
+
+function AvatarUploadButton() {
+  const { toast } = useToast();
+  const { user } = useRole();
+  const [uploading, setUploading] = useState(false);
+  const inputRef = useState<{ el: HTMLInputElement | null }>({ el: null });
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const token = getToken();
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API_BASE}/auth/avatar`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const data = await res.json();
+      toast("success", "Avatar updated");
+      window.location.reload();
+    } catch {
+      toast("error", "Failed to upload avatar");
+    } finally {
+      setUploading(false);
+      if (inputRef[0].el) inputRef[0].el.value = "";
+    }
+  };
+
+  return (
+    <>
+      <input ref={(el) => { inputRef[0].el = el; }} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
+      <button
+        onClick={() => inputRef[0].el?.click()}
+        disabled={uploading}
+        className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full flex items-center justify-center text-white shadow-lg hover:opacity-90 transition-opacity"
+        style={{ background: "var(--primary)" }}
+        title="Change avatar"
+      >
+        {uploading ? <Loader2 size={12} className="animate-spin" /> : <Camera size={12} />}
+      </button>
+    </>
   );
 }
 

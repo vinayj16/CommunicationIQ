@@ -31,6 +31,9 @@ function Companies() {
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
+  const [expandedCompany, setExpandedCompany] = useState<string | null>(null);
+  const [companyQuestions, setCompanyQuestions] = useState<Record<string, any[]>>({});
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
 
   const loadCompanies = useCallback(async () => {
     setLoading(true);
@@ -51,6 +54,27 @@ function Companies() {
   }, []);
 
   useEffect(() => { loadCompanies(); }, [loadCompanies]);
+
+  async function loadCompanyQuestions(companyName: string) {
+    if (companyQuestions[companyName]) return;
+    setLoadingQuestions(true);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/platform/questions?company=${encodeURIComponent(companyName)}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) throw new Error("Failed");
+      const d = await res.json();
+      const all = [
+        ...(d.reading_passages || []).map((i: any) => ({ ...i, _type: 'Reading' })),
+        ...(d.listening_passages || []).map((i: any) => ({ ...i, _type: 'Listening' })),
+        ...(d.task_items || []).map((i: any) => ({ ...i, _type: 'Speaking' })),
+        ...(d.writing_prompts || []).map((i: any) => ({ ...i, _type: 'Writing' })),
+        ...(d.quiz_items || []).map((i: any) => ({ ...i, _type: 'Quiz' })),
+      ];
+      setCompanyQuestions(prev => ({ ...prev, [companyName]: all }));
+    } catch { /* ignore */ }
+    finally { setLoadingQuestions(false); }
+  }
 
   async function handleCreate(name: string, color: string, description: string) {
     try {
@@ -141,13 +165,21 @@ function Companies() {
         })}
       </div>
 
-      {/* Company cards */}
+      {/* Company cards with expandable question lists */}
       <div className="space-y-3">
         {companies.map((company) => {
           const counts = company.question_counts || {};
+          const isExpanded = expandedCompany === company.id;
           return (
             <div key={company.id} className={`ds-card overflow-hidden ${!company.is_active ? "opacity-50" : ""}`}>
-              <div className="flex items-center gap-4 p-4">
+              {/* Clickable header */}
+              <div
+                className="flex items-center gap-4 p-4 cursor-pointer hover:bg-surface2 transition-colors"
+                onClick={() => {
+                  setExpandedCompany(isExpanded ? null : company.id);
+                  if (!isExpanded && !companyQuestions[company.name]) loadCompanyQuestions(company.name);
+                }}
+              >
                 <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
                   style={{ background: company.color + "20" }}>
                   <Building2 size={20} style={{ color: company.color }} />
@@ -181,50 +213,71 @@ function Companies() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <button onClick={() => setEditing(company)}
+                  {isExpanded
+                    ? <ChevronDown size={16} className="text-muted" />
+                    : <ChevronRight size={16} className="text-muted" />}
+                  <button onClick={(e) => { e.stopPropagation(); setEditing(company); }}
                     className="p-2 rounded hover:bg-surface2 transition-colors text-muted hover:text-text"
                     title="Edit">
                     <Pencil size={14} />
                   </button>
-                  <button onClick={() => handleDelete(company.id, company.name)}
+                  <button onClick={(e) => { e.stopPropagation(); handleDelete(company.id, company.name); }}
                     className="p-2 rounded hover:bg-surface2 transition-colors text-muted hover:text-red-500"
                     title="Deactivate">
                     <Trash2 size={14} />
                   </button>
                 </div>
               </div>
+
+              {/* Expanded question list */}
+              {isExpanded && (
+                <div className="border-t p-4" style={{ borderColor: "var(--border)" }}>
+                  {loadingQuestions && !companyQuestions[company.name] ? (
+                    <div className="text-xs text-muted flex items-center gap-2">
+                      <Loader2 size={12} className="animate-spin" /> Loading questions...
+                    </div>
+                  ) : (companyQuestions[company.name] || []).length === 0 ? (
+                    <p className="text-xs text-muted">No questions for this company yet.</p>
+                  ) : (
+                    <>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-muted mb-2">
+                        {(companyQuestions[company.name] || []).length} questions
+                      </div>
+                      <div className="space-y-1 max-h-72 overflow-y-auto">
+                        {(companyQuestions[company.name] || []).map((q: any, i: number) => (
+                          <div key={q.id || i} className="flex items-center gap-2 text-xs p-2 rounded hover:bg-surface2 transition-colors">
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0"
+                              style={{ background: company.color + "15", color: company.color }}>
+                              {q._type}
+                            </span>
+                            <span className="truncate text-muted">{q.title || q.stem || q.prompt_text || '—'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
 
-      {/* Create Modal */}
       {showCreate && (
-        <CompanyModal
-          onClose={() => setShowCreate(false)}
-          onSave={handleCreate}
-        />
+        <CompanyModal onClose={() => setShowCreate(false)} onSave={handleCreate} />
       )}
-
-      {/* Edit Modal */}
       {editing && (
-        <CompanyModal
-          company={editing}
-          onClose={() => setEditing(null)}
-          onSave={(name, color, desc) => handleUpdate(editing.id, { name, color, description: desc })}
-        />
+        <CompanyModal company={editing} onClose={() => setEditing(null)}
+          onSave={(name, color, desc) => handleUpdate(editing.id, { name, color, description: desc })} />
       )}
     </>
   );
 }
 
 function CompanyModal({
-  company,
-  onClose,
-  onSave,
+  company, onClose, onSave,
 }: {
-  company?: Company;
-  onClose: () => void;
+  company?: Company; onClose: () => void;
   onSave: (name: string, color: string, description: string) => void;
 }) {
   const [name, setName] = useState(company?.name || "");
@@ -246,7 +299,6 @@ function CompanyModal({
           <h3 className="text-sm font-bold">{company ? "Edit Company" : "Add New Company"}</h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-surface2"><X size={16} /></button>
         </div>
-
         <div className="space-y-4">
           <div>
             <label className="text-xs font-semibold mb-1 block">Company Name *</label>
@@ -255,7 +307,6 @@ function CompanyModal({
               style={{ borderColor: "var(--border)" }}
               placeholder="e.g., Google, Microsoft, Amazon" autoFocus />
           </div>
-
           <div>
             <label className="text-xs font-semibold mb-1 block">Brand Color</label>
             <div className="flex items-center gap-2">
@@ -263,26 +314,20 @@ function CompanyModal({
                 className="w-8 h-8 rounded cursor-pointer border-0" />
               <input value={color} onChange={(e) => setColor(e.target.value)}
                 className="flex-1 text-sm p-2 rounded border bg-transparent font-mono"
-                style={{ borderColor: "var(--border)" }}
-                placeholder="#6366f1" />
+                style={{ borderColor: "var(--border)" }} placeholder="#6366f1" />
             </div>
           </div>
-
           <div>
             <label className="text-xs font-semibold mb-1 block">Description</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)}
-              rows={3}
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
               className="w-full text-sm p-2 rounded border bg-transparent resize-none"
               style={{ borderColor: "var(--border)" }}
               placeholder="Brief description of this company's exam pattern..." />
           </div>
         </div>
-
         <div className="flex gap-2 mt-6">
-          <button onClick={onClose}
-            className="btn btn-ghost flex-1">Cancel</button>
-          <button onClick={handleSave} disabled={!name.trim() || busy}
-            className="btn btn-primary flex-1">
+          <button onClick={onClose} className="btn btn-ghost flex-1">Cancel</button>
+          <button onClick={handleSave} disabled={!name.trim() || busy} className="btn btn-primary flex-1">
             {busy ? <Loader2 size={14} className="animate-spin inline mr-1" /> : null}
             {company ? "Save Changes" : "Create Company"}
           </button>

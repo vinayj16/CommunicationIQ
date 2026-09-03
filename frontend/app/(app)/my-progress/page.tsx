@@ -104,11 +104,7 @@ function MyProgress() {
         </Link>
       </div>
 
-      {/* Finished tests only, and in plain words.
-          This listed every row including "created" and "in_progress" — our
-          lifecycle states, shown to a student as though they meant something.
-          A test you opened and abandoned is not a result, and putting eight of
-          them above your real scores buries the thing you came to see. */}
+      {/* All attempts with status and details */}
       <Section title="Your tests">
         {d.recent_attempts.length === 0 ? (
           <p className="text-xs text-muted">
@@ -117,29 +113,46 @@ function MyProgress() {
           </p>
         ) : (
           <div className="space-y-2">
-            {d.recent_attempts.filter((a) => a.status === "scored").map((a) => (
-              <div key={a.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-border last:border-0">
-                <Link href={`/results/${a.id}`} className="flex-1 font-medium hover:underline ds-focus">
-                  {a.profile_name}
-                </Link>
-                <span className="font-bold w-12 text-right">
-                  {a.overall_score != null ? a.overall_score : "not scored"}
+            {d.recent_attempts.map((a) => (
+              <div key={a.id} className="flex items-center gap-3 text-xs py-1.5 px-2 rounded hover:bg-surface2 transition-colors border-b border-border last:border-0">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Link href={a.status === "scored" ? `/results/${a.id}` : "#"}
+                      className="font-medium hover:underline ds-focus truncate">
+                      {a.profile_name}
+                    </Link>
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide
+                      ${a.status === "scored"
+                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                        : a.status === "in_progress"
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                        : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"}`}>
+                      {a.status}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-muted mt-0.5">
+                    Attempt #{a.attempt_number}
+                    {a.started_at && ` · Started ${new Date(a.started_at).toLocaleString()}`}
+                    {a.ip_address && ` · IP: ${a.ip_address}`}
+                    {a.proctor_strikes != null && a.proctor_strikes > 0 && (
+                      <span className="ml-1 text-red-500 font-semibold"> · {a.proctor_strikes} strikes</span>
+                    )}
+                  </div>
+                </div>
+                <span className="font-bold w-12 text-right tabular-nums">
+                  {a.overall_score != null ? a.overall_score : "—"}
                 </span>
-                <button
-                  onClick={() => window.open(attemptApi.reportUrl(a.id), "_blank")}
-                  className="btn btn-ghost text-[10px] px-2 py-1 ds-focus"
-                  title="Download PDF report"
-                >
-                  <FileText size={11} /> Report
-                </button>
+                {a.status === "scored" && (
+                  <button
+                    onClick={() => window.open(attemptApi.reportUrl(a.id), "_blank")}
+                    className="btn btn-ghost text-[10px] px-2 py-1 ds-focus"
+                    title="Download PDF report"
+                  >
+                    <FileText size={11} /> Report
+                  </button>
+                )}
               </div>
             ))}
-            {d.recent_attempts.every((a) => a.status !== "scored") && (
-              <p className="text-xs text-muted">
-                Nothing finished yet. A test only appears here once it has been
-                scored.
-              </p>
-            )}
           </div>
         )}
       </Section>

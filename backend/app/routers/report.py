@@ -14,14 +14,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 
-from app.deps import Principal, TenantModels, require_roles
+from app.deps import TenantModels, decode_token
+from app.security import TokenPrincipal
 from app import formats
 
-router = APIRouter(prefix="/report", tags=["report"],
-                   dependencies=[Depends(require_roles("student", "tenant_admin", "super_admin"))])
+router = APIRouter(prefix="/report", tags=["report"])
 
 
 def _skill_bar(label: str, score: float, scale_max: float = 100, width: int = 40) -> str:
@@ -378,10 +378,27 @@ def _html_report(
 </html>"""
 
 
+async def _extract_principal(request: Request, token: str = "") -> TokenPrincipal:
+    """Extract auth from Bearer header OR ?token= query param."""
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        decoded = decode_token(auth_header[7:])
+        if decoded:
+            return decoded
+    if token:
+        decoded = decode_token(token)
+        if decoded:
+            return decoded
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+
+
 @router.get("/{attempt_id}", response_class=HTMLResponse)
-async def report_html(attempt_id: str, principal: Principal,
-                      models: TenantModels) -> HTMLResponse:
+async def report_html(attempt_id: str,
+                      request: Request,
+                      models: TenantModels,
+                      token: str = "") -> HTMLResponse:
     """A self-contained HTML report for one attempt. Prints cleanly as PDF."""
+    principal = await _extract_principal(request, token)
     attempt = await models.Attempt.get(attempt_id)
     if attempt is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found")

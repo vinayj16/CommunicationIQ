@@ -10,14 +10,15 @@ import {
   ApiError, writingApi,
   type WritingPromptRow, type WritingResult,
 } from "@/lib/api";
-import { useData } from "@/lib/useData";
 import { FullscreenPrompt } from "@/components/FullscreenPrompt";
 import { FullscreenGuard } from "@/components/FullscreenGuard";
 import { LevelSelect, type DifficultyLevel } from "@/components/LevelSelect";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
+import { ReviewCard } from "@/components/ReviewCard";
 import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
 import { markAttempted } from "@/lib/setTracker";
+import { setExamMode } from "@/lib/examMode";
 
 export default function WritingPage() {
   return (
@@ -27,7 +28,7 @@ export default function WritingPage() {
   );
 }
 
-type Stage = "intro" | "select" | "loading" | "write" | "marked";
+type Stage = "intro" | "select" | "loading" | "write" | "marked" | "review";
 
 const KIND_LABEL: Record<string, string> = {
   email: "Email", report: "Report", essay: "Essay",
@@ -45,12 +46,13 @@ const MEASURE_LABEL: Record<string, string> = {
 function Writing() {
   const { toast } = useToast();
   const proctoring = useProctoring();
-  const { data, loading, error } = useData(() => writingApi.prompts());
   const [stage, setStage] = useState<Stage>("intro");
   const [prompts, setPrompts] = useState<WritingPromptRow[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [text, setText] = useState("");
+  const [taskRating, setTaskRating] = useState(0);
   const [result, setResult] = useState<WritingResult | null>(null);
+  const [results, setResults] = useState<WritingResult[]>([]);
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
@@ -84,7 +86,7 @@ function Writing() {
       const general = allPrompts.filter(
         (p) => !p.company || p.company === "" || p.company === "General"
       );
-      const pool = general.length >= 10 ? general : allPrompts;
+      const pool = general.length > 0 ? general : allPrompts;
       // Shuffle and take 10
       const shuffled = [...pool].sort(() => Math.random() - 0.5);
       const selected = shuffled.slice(0, Math.min(10, shuffled.length));
@@ -122,8 +124,8 @@ function Writing() {
         minutes_spent: Math.round((Date.now() - openedAt.current) / 60_000),
       });
       setResult(marked);
+      setResults((prev) => [...prev, marked]);
       window.localStorage.removeItem(`writing-draft-${prompt.id}`);
-      proctoring.stopCamera();
       setStage("marked");
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not submit";
@@ -143,18 +145,18 @@ function Writing() {
       openedAt.current = Date.now();
       setStage("write");
     } else {
-      // All done — go back to start
-      setPrompts([]);
-      setCurrentIndex(0);
-      setStage("intro");
-      toast("success", "All writing tasks completed!");
+      // All done — show review with camera stopped
+      proctoring.stopCamera();
+      setExamMode(false);
+      setStage("review");
     }
   }
 
-  // Request camera when practice starts
+  // Request camera and set exam mode when practice starts
   useEffect(() => {
-    if (stage !== "intro" && stage !== "loading" && !proctoring.state.cameraActive) {
-      proctoring.requestCamera();
+    if (stage === "write" || stage === "marked") {
+      setExamMode(true);
+      if (!proctoring.state.cameraActive) proctoring.requestCamera();
     }
   }, [stage]);
 
@@ -215,17 +217,14 @@ function Writing() {
         timeRemaining={`${remainingMinutes}:${String(remainingSecs).padStart(2, "0")}`}
         totalSecondsRemaining={remainingSeconds}
         onNavigate={(idx) => {
-          // Only allow going forward to completed prompts
-          if (idx <= currentIndex) {
-            // Already done — could review but for now skip
+          if (idx < currentIndex) {
+            setCurrentIndex(idx);
           }
         }}
-        collapsed={true}
         onEndExam={() => {
           if (confirm("Are you sure you want to end this practice?")) {
-            setPrompts([]);
-            setCurrentIndex(0);
-            setStage("intro");
+            proctoring.stopCamera();
+            setStage("review");
           }
         }}
         showInstructions={showInstructions}
@@ -375,6 +374,117 @@ function Writing() {
         <Section title="What you wrote">
           <p className="text-xs leading-relaxed whitespace-pre-line">{result.text}</p>
         </Section>
+
+        {/* Review & Rating Card */}
+        <div className="ds-card p-5 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-bold">Rate this writing task</div>
+            <div className="flex gap-1">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button key={star}
+                  onClick={() => setTaskRating(star)}
+                  className="text-lg transition-colors"
+                  style={{ color: star <= taskRating ? "var(--rag-amber)" : "var(--border)" }}>
+                  ★
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="text-xs text-muted leading-relaxed mb-3">
+            How was this writing task? Your rating helps improve question quality.
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={nextPrompt}
+                    className="btn btn-primary btn-sm ds-focus flex-1">
+              {currentIndex + 1 < prompts.length ? `Next task (${currentIndex + 2}/${prompts.length})` : "Back to practice"}
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // ---------------------------------------------------------------- review --
+  if (stage === "review") {
+    const completed = results.length;
+    const avgScore = completed > 0
+      ? (results.reduce((sum, r) => sum + (r.overall ?? 0), 0) / completed).toFixed(1)
+      : "—";
+    const totalWords = results.reduce((sum, r) => sum + r.word_count, 0);
+    const totalXp = results.reduce((sum, r) => sum + r.xp_awarded, 0);
+
+    return (
+      <>
+        <PageHeader
+          title="Writing Practice — Summary"
+          sub={`${completed} of ${prompts.length} tasks completed`}
+          action={
+            <button onClick={() => {
+              setPrompts([]);
+              setResults([]);
+              setCurrentIndex(0);
+              setResult(null);
+              setStage("intro");
+              toast("success", "All writing tasks completed!");
+            }} className="btn btn-primary btn-sm ds-focus">
+              Back to practice
+            </button>
+          }
+        />
+
+        {completed === 0 ? (
+          <div className="ds-card p-8 text-center">
+            <PenLine size={24} className="mx-auto mb-2 text-muted" />
+            <p className="text-sm text-muted">No tasks were submitted.</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <div className="ds-card p-3 text-center">
+                <div className="text-lg font-bold" style={{ color: "var(--primary)" }}>{completed}</div>
+                <div className="text-[10px] text-muted">Tasks done</div>
+              </div>
+              <div className="ds-card p-3 text-center">
+                <div className="text-lg font-bold" style={{ color: "var(--primary)" }}>{avgScore}</div>
+                <div className="text-[10px] text-muted">Avg score</div>
+              </div>
+              <div className="ds-card p-3 text-center">
+                <div className="text-lg font-bold" style={{ color: "var(--primary)" }}>{totalWords}</div>
+                <div className="text-[10px] text-muted">Total words</div>
+              </div>
+              <div className="ds-card p-3 text-center">
+                <div className="text-lg font-bold" style={{ color: "var(--primary)" }}>+{totalXp}</div>
+                <div className="text-[10px] text-muted">XP earned</div>
+              </div>
+            </div>
+
+            <Section title="Task results">
+              <div className="space-y-2">
+                {results.map((r, i) => (
+                  <div key={r.submission_id} className="ds-card p-3 flex items-center gap-3">
+                    <span className="text-xs font-bold text-muted w-6">{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-semibold truncate">{r.title}</div>
+                      <div className="text-[10px] text-muted">{r.word_count} words</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-bold"
+                           style={{ color: r.overall != null && r.overall >= 6 ? "var(--rag-green)" : r.overall != null && r.overall >= 4 ? "var(--rag-amber)" : "var(--rag-red)" }}>
+                        {r.overall != null ? r.overall : "—"}
+                      </div>
+                      {r.xp_awarded > 0 && (
+                        <div className="text-[9px] text-muted">+{r.xp_awarded} XP</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+
+            {/* Review & Rating Card */}
+            <ReviewCard attemptId={undefined} label="writing" onNext={() => setStage("intro")} onBack={() => setStage("intro")} nextLabel="Back to practice" />
+          </>
+        )}
       </>
     );
   }

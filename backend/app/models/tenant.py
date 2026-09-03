@@ -44,6 +44,7 @@ class User(Document):
     year_of_study: int | None = None
     l1_language: str = ""
     preferred_theme: str = ""
+    avatar_url: str = ""
 
     last_login_at: datetime | None = None
     created_at: datetime | None = Field(default_factory=_now)
@@ -183,6 +184,7 @@ class TaskItem(Document):
 
     id: StrId = Field(default_factory=_uuid, alias="_id")
     tenant_id: str = Field(default="", index=True)
+    question_number: str = Field(default="", index=True)  # SPEAK-000001
     task_type: str = Field(default="", index=True)
     prompt_text: str = ""
     company: str = ""
@@ -214,6 +216,7 @@ class QuizItem(Document):
 
     id: StrId = Field(default_factory=_uuid, alias="_id")
     tenant_id: str = Field(default="", index=True)
+    question_number: str = Field(default="", index=True)  # READ-000001 or GRAM-000001
     category: str = Field(default="", index=True)
     stem: str
     options: list = Field(default_factory=list)
@@ -239,6 +242,7 @@ class ListeningPassage(Document):
 
     id: StrId = Field(default_factory=_uuid, alias="_id")
     tenant_id: str = Field(default="", index=True)
+    question_number: str = Field(default="", index=True)  # LISTEN-000001
     title: str
     kind: str = "short_talk"
     transcript: str
@@ -260,6 +264,7 @@ class WritingPrompt(Document):
 
     id: StrId = Field(default_factory=_uuid, alias="_id")
     tenant_id: str = Field(default="", index=True)
+    question_number: str = Field(default="", index=True)  # WRITE-000001
     title: str
     kind: str = "email"
     prompt: str
@@ -300,6 +305,7 @@ class ReadingPassage(Document):
 
     id: StrId = Field(default_factory=_uuid, alias="_id")
     tenant_id: str = Field(default="", index=True)
+    question_number: str = Field(default="", index=True)  # READ-000001
     title: str
     kind: str = "article"
     body: str
@@ -390,6 +396,9 @@ class Attempt(Document):
     started_at: datetime | None = None
     submitted_at: datetime | None = None
     scored_at: datetime | None = None
+    # Proctoring data: list of events with optional screenshots
+    proctor_events: list[dict] = Field(default_factory=list)
+    proctor_strikes: int = 0
     created_at: datetime | None = Field(default_factory=_now)
 
     class Settings:

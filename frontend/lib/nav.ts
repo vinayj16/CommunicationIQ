@@ -2,6 +2,7 @@ import {
   Activity, BarChart3, Building2, BookOpen,
   Home, Layers, LineChart, Mic, PenLine,
   ScrollText, Settings, ShieldCheck, Star, Target, Trophy, Users,
+  CreditCard, Mail, Package, MessageSquare, ClipboardList, Contact,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Role } from "@/lib/api";
@@ -13,6 +14,7 @@ export interface NavItem {
   roles: Role[];
   milestone?: string;
   tint?: string;
+  generalOnly?: boolean; // visible only for general (non-institution) students
 }
 
 export const TINT = {
@@ -47,6 +49,8 @@ export const NAV: NavSection[] = [
       { href: "/tests", label: "Take a test", icon: Mic, roles: STUDENT, tint: TINT.violet },
       { href: "/my-progress", label: "My progress", icon: LineChart, roles: STUDENT, tint: TINT.sky },
       { href: "/writing-reviews", label: "Writing reviews", icon: PenLine, roles: STUDENT, tint: TINT.orange },
+      { href: "/plans", label: "Plans", icon: CreditCard, roles: STUDENT, tint: TINT.violet, generalOnly: true },
+      { href: "/contact", label: "Contact Us", icon: Contact, roles: STUDENT, tint: TINT.sky },
     ],
   },
   {
@@ -57,32 +61,72 @@ export const NAV: NavSection[] = [
       { href: "/tenant/results", label: "Exam results", icon: Trophy, roles: TENANT, tint: TINT.rose },
       { href: "/tenant/reviews", label: "Reviews", icon: Star, roles: TENANT, tint: TINT.amber },
       { href: "/tenant/readiness", label: "Readiness", icon: BarChart3, roles: TENANT, tint: TINT.emerald },
+      { href: "/tenant/audit", label: "Activity Log", icon: ShieldCheck, roles: TENANT, tint: TINT.slate },
+    ],
+  },
+  // ── Super Admin: Main ──────────────────────────────────────────────────
+  {
+    title: "Overview",
+    items: [
+      { href: "/platform", label: "Dashboard", icon: Activity, roles: PLATFORM, tint: TINT.sky },
     ],
   },
   {
-    title: "Platform",
+    title: "Institutions",
     items: [
-      { href: "/platform", label: "Overview", icon: Activity, roles: PLATFORM, tint: TINT.sky },
-      { href: "/platform/tenants", label: "Institutions", icon: Building2, roles: PLATFORM, tint: TINT.cyan },
+      { href: "/platform/tenants", label: "All Institutions", icon: Building2, roles: PLATFORM, tint: TINT.cyan },
+      { href: "/platform/plans", label: "Plans & Pricing", icon: Package, roles: PLATFORM, tint: TINT.violet },
+    ],
+  },
+  {
+    title: "Exam",
+    items: [
       { href: "/platform/content", label: "Question Bank", icon: BookOpen, roles: PLATFORM, tint: TINT.emerald },
+      { href: "/platform/sets", label: "Question Sets", icon: Layers, roles: PLATFORM, tint: TINT.teal },
+      { href: "/platform/exam-tests", label: "Exam Tests", icon: ClipboardList, roles: PLATFORM, tint: TINT.cyan },
       { href: "/platform/companies", label: "Companies", icon: Building2, roles: PLATFORM, tint: TINT.indigo },
-      { href: "/platform/results", label: "Exam results", icon: Trophy, roles: PLATFORM, tint: TINT.rose },
+    ],
+  },
+  {
+    title: "Results & Reviews",
+    items: [
+      { href: "/platform/results", label: "All Results", icon: Trophy, roles: PLATFORM, tint: TINT.rose },
       { href: "/platform/reviews", label: "Reviews", icon: Star, roles: PLATFORM, tint: TINT.amber },
-      { href: "/platform/audit", label: "Audit log", icon: ScrollText, roles: PLATFORM, tint: TINT.slate },
+    ],
+  },
+  {
+    title: "Login & Security",
+    items: [
+      { href: "/platform/audit", label: "Audit Log", icon: ScrollText, roles: PLATFORM, tint: TINT.slate },
+    ],
+  },
+  {
+    title: "Communication",
+    items: [
+      { href: "/platform/messages", label: "Messages", icon: MessageSquare, roles: PLATFORM, tint: TINT.rose },
+      { href: "/platform/smtp", label: "Email / SMTP", icon: Mail, roles: PLATFORM, tint: TINT.orange },
+      { href: "/platform/email-templates", label: "Email Templates", icon: Mail, roles: PLATFORM, tint: TINT.lime },
+      { href: "/platform/payments", label: "Payments", icon: CreditCard, roles: PLATFORM, tint: TINT.rose },
     ],
   },
   {
     title: "Account",
     items: [
-      { href: "/settings", label: "Settings", icon: Settings, roles: [...TENANT, ...PLATFORM], tint: TINT.slate },
+      { href: "/settings", label: "Settings", icon: Settings, roles: [...STUDENT, ...TENANT, ...PLATFORM], tint: TINT.slate },
     ],
   },
 ];
 
-export function navFor(role: Role | undefined): NavSection[] {
+export function navFor(role: Role | undefined, tenantSlug?: string | null): NavSection[] {
   if (!role) return [];
+  const isGeneral = !tenantSlug || tenantSlug === "general";
   return NAV
-    .map((section) => ({ ...section, items: section.items.filter((i) => i.roles.includes(role)) }))
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((i) =>
+        i.roles.includes(role) && (!i.generalOnly || isGeneral)
+      ),
+    }))
     .filter((section) => section.items.length > 0);
 }
 

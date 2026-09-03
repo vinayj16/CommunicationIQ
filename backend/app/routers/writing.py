@@ -59,14 +59,17 @@ async def prompts(principal: Principal,
             if p.company and p.company.lower() == company.lower():
                 all_rows.append(p)
     else:
-        all_rows = await query.to_list()
+        all_rows = [
+            p for p in await query.to_list()
+            if not getattr(p, 'company', '') or p.company.lower() in ('', 'general')
+        ]
     import random as _rand
     _rand.shuffle(all_rows)
 
     # Exclude prompts already submitted by this user
     attempted = await models.WritingSubmissionRow.find(
         models.WritingSubmissionRow.user_id == principal.user_id
-    ).all()
+    ).to_list()
     attempted_ids = {a.prompt_id for a in attempted}
     if attempted_ids:
         all_rows = [p for p in all_rows if p.id not in attempted_ids]
@@ -90,6 +93,10 @@ async def prompts(principal: Principal,
 @router.post("/prompts/{prompt_id}/submit", response_model=WritingResult)
 async def submit(prompt_id: str, body: WritingSubmission,
                  principal: Principal, models: TenantModels) -> WritingResult:
+    # Subscription check for general users
+    from app.subscription import require_subscription
+    await require_subscription(principal)
+
     prompt = await models.WritingPrompt.get(prompt_id)
     if prompt is None or prompt.status != "published":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such prompt")
@@ -139,7 +146,7 @@ async def submissions(principal: Principal,
         models.WritingSubmissionRow.user_id == principal.user_id).sort(
         -models.WritingSubmissionRow.submitted_at).limit(20).to_list()
 
-    titles = {p.id: p.title async for p in models.WritingPrompt.all()}
+    titles = {p.id: p.title async for p in models.WritingPrompt.find_all()}
 
     return [
         WritingResult(

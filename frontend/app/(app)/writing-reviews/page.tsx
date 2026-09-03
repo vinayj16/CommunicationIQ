@@ -33,19 +33,20 @@ function WritingReviews() {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }).then((r) => r.ok ? r.json() : []);
   });
-  // Fetch all reviews (student reviews on exam results)
-  const reviews = useData(() => {
+  // Fetch exam reviews (student ratings for all attempts)
+  const examReviews = useData(() => {
     const token = getToken();
-    return fetch(`${API_BASE}/student/writing/submissions`, {
+    return fetch(`${API_BASE}/student/reviews`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }).then((r) => r.ok ? r.json() : []);
   });
 
-  if (home.loading || writingSubmissions.loading) return <Skeleton rows={4} />;
+  if (home.loading || writingSubmissions.loading || examReviews.loading) return <Skeleton rows={4} />;
   if (home.error) return <ErrorNote message={home.error} />;
 
   const submissions = (writingSubmissions.data ?? []) as any[];
   const attempts = (home.data?.recent_attempts ?? []);
+  const reviews = (examReviews.data ?? []) as any[];
 
   return (
     <>
@@ -140,6 +141,40 @@ function WritingReviews() {
                     </a>
                   )}
                 </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Exam Reviews (student ratings after tests) */}
+      {reviews.length > 0 && (
+        <Section title="Your Reviews" className="mb-4">
+          <div className="space-y-2">
+            {reviews.map((r: any) => (
+              <div key={r.id} className="p-3 rounded-lg" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="flex">
+                      {[1, 2, 3, 4, 5].map(s => (
+                        <Star key={s} size={12} fill={s <= r.rating ? "var(--rag-amber)" : "none"}
+                              style={{ color: s <= r.rating ? "var(--rag-amber)" : "var(--border)" }} />
+                      ))}
+                    </div>
+                    <span className="text-[10px] text-muted">{r.rating}/5</span>
+                    {r.difficulty && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--surface-2)" }}>
+                        {DIFF_LABELS[r.difficulty] || r.difficulty}
+                      </span>
+                    )}
+                  </div>
+                  <a href={`/results/${r.attempt_id}`} className="text-[10px] text-muted hover:underline">
+                    View result
+                  </a>
+                </div>
+                {r.comment && (
+                  <p className="text-[11px] leading-relaxed mt-1.5" style={{ color: "var(--muted)" }}>{r.comment}</p>
+                )}
               </div>
             ))}
           </div>

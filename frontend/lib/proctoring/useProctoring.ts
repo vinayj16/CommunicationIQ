@@ -44,9 +44,18 @@ export function useProctoring() {
   const addEvent = useCallback(
     (flag: ProctorFlag, severity: "low" | "medium" | "high", detail?: string) => {
       const ev = event(flag, severity, detail);
-      eventsRef.current.push(ev);
+      // Capture screenshot for high-severity events (stored, not displayed during exam)
       if (severity === "high") {
+        eventsRef.current.push(ev);
         strikesRef.current += 1;
+        // Capture screenshot asynchronously - only stored, never shown during exam
+        captureScreenshot().then((dataUrl) => {
+          if (dataUrl) {
+            ev.screenshot = dataUrl;
+          }
+        });
+      } else {
+        eventsRef.current.push(ev);
       }
       setState((prev) => ({
         ...prev,
@@ -56,6 +65,32 @@ export function useProctoring() {
     },
     [],
   );
+
+  // ── Screenshot Capture ──────────────────────────────────────────────────
+  const captureScreenshot = useCallback(async (): Promise<string | null> => {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+
+      // Use html2canvas-like approach: capture visible page
+      // For simplicity, we capture the video frame if camera is active
+      if (videoRef.current && canvasRef.current) {
+        const video = videoRef.current;
+        const srcCanvas = canvasRef.current;
+        const srcCtx = srcCanvas.getContext("2d");
+        if (srcCtx && video.readyState >= 2) {
+          srcCtx.drawImage(video, 0, 0, 320, 240);
+          return srcCanvas.toDataURL("image/jpeg", 0.6);
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   // ── Tab / Window Focus Detection ────────────────────────────────────────
   useEffect(() => {

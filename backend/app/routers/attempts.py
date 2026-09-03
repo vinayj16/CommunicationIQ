@@ -210,6 +210,10 @@ async def start_attempt(body: StartAttemptRequest, principal: Principal,
     student who reloads mid-test must get the same test back, and an attempt
     whose questions changed under it is not a measurement of anything.
     """
+    # Subscription check for general users
+    from app.subscription import require_subscription
+    await require_subscription(principal)
+
     consent = await _recording_consent(session, principal.user_id)
     if consent is None or not consent.granted:
         raise HTTPException(
@@ -1573,7 +1577,8 @@ async def skip_response(attempt_id: str, response_id: str, principal: Principal,
 @router.post("/{attempt_id}/submit", response_model=AttemptResult)
 async def submit(attempt_id: str, principal: Principal, session: TenantSession,
                  platform: PlatformSession,
-                 background: BackgroundTasks) -> AttemptResult:
+                 background: BackgroundTasks,
+                 request: Request) -> AttemptResult:
     """Close the attempt and compose its score.
 
     Most of the work is already done — each answer was scored as it arrived.
@@ -1584,6 +1589,19 @@ async def submit(attempt_id: str, principal: Principal, session: TenantSession,
     attempt = await _own_attempt(session, principal, attempt_id)
     if attempt.status == "scored":
         return await _result(session, attempt)
+
+    # Accept proctoring data from request body
+    try:
+        body = await request.json()
+        if body and isinstance(body, dict):
+            proctor_events = body.get("proctor_events", [])
+            proctor_strikes = body.get("proctor_strikes", 0)
+            if proctor_events:
+                attempt.proctor_events = proctor_events
+            if proctor_strikes:
+                attempt.proctor_strikes = proctor_strikes
+    except Exception:
+        pass  # No body or invalid body — proceed without proctoring data
 
     if attempt.submitted_at is None:
         attempt.submitted_at = datetime.now(timezone.utc)
@@ -2570,6 +2588,8 @@ async def _result(session: TenantSession, attempt: Attempt,
         scored_at=attempt.scored_at,
         scoring_ms=scoring_ms,
         narration=await _narration_out(session, attempt.id),
+        proctor_events=getattr(attempt, "proctor_events", []),
+        proctor_strikes=getattr(attempt, "proctor_strikes", 0),
         **_reporting_for(overall_row.score if overall_row else None,
                          dimensions, skill_out, dimension_notes,
                          _unscored_reasons(rows, dimensions), rows,
@@ -2679,6 +2699,35 @@ async def get_attempt_reviews(attempt_id: str, principal: Principal,
             user_name=users.get(r.get("user_id", ""), {}).get("full_name", ""),
             user_email=users.get(r.get("user_id", ""), {}).get("email", ""),
             profile_name=profiles.get(r.get("profile_id", ""), {}).get("name", ""),
+            rating=r.get("rating", 0), difficulty=r.get("difficulty", "just_right"),
+            comment=r.get("comment", ""), created_at=r.get("created_at", ""),
+        )
+        for r in raw
+    ]
+
+
+@router.get("/reviews", response_model=list[ReviewOut])
+async def get_my_reviews(principal: Principal) -> list[ReviewOut]:
+    """All reviews submitted by the current user."""
+    from app.db import control_db
+    db = control_db()
+    raw = await db.exam_reviews.find(
+        {"user_id": principal.user_id}
+    ).sort("created_at", -1).to_list(200)
+    if not raw:
+        return []
+    attempt_ids = list({r.get("attempt_id", "") for r in raw if r.get("attempt_id")})
+    attempts = {}
+    if attempt_ids:
+        async for a in db.attempts.find({"_id": {"$in": attempt_ids}}):
+            attempts[a["_id"]] = a
+    return [
+        ReviewOut(
+            id=r.get("_id", ""),
+            attempt_id=r.get("attempt_id", ""),
+            user_name=principal.email.split("@")[0],
+            user_email=principal.email,
+            profile_name=attempts.get(r.get("attempt_id", ""), {}).get("profile_name", ""),
             rating=r.get("rating", 0), difficulty=r.get("difficulty", "just_right"),
             comment=r.get("comment", ""), created_at=r.get("created_at", ""),
         )

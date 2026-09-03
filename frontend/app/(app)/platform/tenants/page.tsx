@@ -2,7 +2,7 @@
 import { useMemo, useRef, useState } from "react";
 import {
   Building2, ChevronDown, ChevronRight, Download, Image as ImageIcon, Link2, Plus,
-  Trash2, Upload,
+  Trash2, Upload, Users,
 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { PLATFORM_ROLES } from "@/lib/roles";
@@ -10,6 +10,7 @@ import { useToast } from "@/components/Toast";
 import { Badge, ErrorNote, PageHeader, Section, Skeleton } from "@/components/ui";
 import {
   api, ApiError, assetUrl, operatorApi, EMPTY_TENANT_PROFILE,
+  API_BASE, getToken,
   type TenantProfile, type TenantRow, type UserRow,
 } from "@/lib/api";
 import { useData } from "@/lib/useData";
@@ -35,13 +36,13 @@ const STATUS_TONE: Record<string, string> = {
 type Draft = {
   name: string; slug: string; domain: string; tenant_type: string; status: string;
   seat_limit: number; region: string;
-  admin_email: string; admin_name: string;
+  admin_email: string; admin_name: string; admin_password: string;
 };
 
 function newDraft(defaultType: string): Draft {
   return {
     name: "", slug: "", domain: "", tenant_type: defaultType, status: "trial",
-    seat_limit: 100, region: "", admin_email: "", admin_name: "",
+    seat_limit: 100, region: "", admin_email: "", admin_name: "", admin_password: "",
   };
 }
 
@@ -378,6 +379,12 @@ function Tenants() {
               <input className="ds-input w-full" type="email" value={draft.admin_email}
                      onChange={(e) => setDraft({ ...draft, admin_email: e.target.value })} />
             </Field>
+            <Field label="First admin — password"
+                   hint="Leave blank to auto-generate a temporary password.">
+              <input className="ds-input w-full" type="text" value={draft.admin_password}
+                     onChange={(e) => setDraft({ ...draft, admin_password: e.target.value })}
+                     placeholder="Auto-generated if empty" />
+            </Field>
           </div>
           <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
             <button type="button"
@@ -453,6 +460,7 @@ function TenantCard({ tenant, types, open, busy, onToggle, onRun }: {
   const [showStudents, setShowStudents] = useState(false);
   const [students, setStudents] = useState<{id:string;full_name:string;email:string;role:string;active:boolean}[]>([]);
   const [loadingStudents, setLoadingStudents] = useState(false);
+  const [showBulkUsers, setShowBulkUsers] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function loadStudents() {
@@ -618,11 +626,13 @@ function TenantCard({ tenant, types, open, busy, onToggle, onRun }: {
           </div>
 
           <div className="pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-            <button type="button" className="btn btn-ghost btn-sm ds-focus w-full text-left"
-                    onClick={loadStudents}>
-              {showStudents ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              Students & users ({tenant.seats_used} active)
-            </button>
+            <div className="flex items-center justify-between">
+              <button type="button" className="btn btn-ghost btn-sm ds-focus w-full text-left"
+                      onClick={loadStudents}>
+                {showStudents ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                Students & users ({tenant.seats_used} active)
+              </button>
+            </div>
             {showStudents && (
               <div className="mt-2 space-y-1">
                 {loadingStudents ? <div className="text-[11px] text-muted">Loading...</div> : (
@@ -706,5 +716,67 @@ function Field({ label, hint, children }: {
       {children}
       {hint && <span className="block text-[10px] text-muted mt-1 leading-relaxed">{hint}</span>}
     </label>
+  );
+}
+
+
+function BulkUserForm({ tenantId, seatLimit, seatsUsed, onDone }: {
+  tenantId: string; seatLimit: number; seatsUsed: number; onDone: () => void;
+}) {
+  const { toast } = useToast();
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const valid = lines.filter((l) => l.includes("@"));
+  const available = seatLimit - seatsUsed;
+
+  const submit = async () => {
+    if (valid.length === 0) { toast("error", "No valid entries"); return; }
+    if (valid.length > available) { toast("error", `Only ${available} seats available`); return; }
+    setLoading(true);
+    let created = 0;
+    for (const line of valid) {
+      try {
+        const parts = line.split(",").map((s) => s.trim());
+        const email = parts.find((p) => p.includes("@")) || "";
+        const name = parts.find((p) => !p.includes("@")) || email.split("@")[0];
+        if (!email) continue;
+        const token = getToken();
+        await fetch(`${API_BASE}/platform/tenants/${tenantId}/users`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ email, full_name: name, role: "student" }),
+        });
+        created++;
+      } catch {}
+    }
+    toast("success", `${created} users created`);
+    setLoading(false);
+    onDone();
+  };
+
+  return (
+    <div className="ds-card p-3 mt-2">
+      <div className="text-[11px] font-semibold mb-2">Bulk Add Users (Name, email per line)</div>
+      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={5}
+        className="w-full px-3 py-2 text-[11px] rounded border bg-transparent mb-2 resize-y"
+        style={{ borderColor: "var(--border)" }}
+        placeholder={"John Doe, john@example.com\nJane Smith, jane@example.com"} />
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-muted">
+          {valid.length} valid · {available} seats remaining
+        </span>
+        <div className="flex gap-2">
+          <button onClick={onDone} className="text-[10px] px-2 py-1 rounded border"
+            style={{ borderColor: "var(--border)" }}>Cancel</button>
+          <button onClick={submit} disabled={loading || valid.length === 0}
+            className="text-[10px] px-2 py-1 rounded text-white disabled:opacity-50"
+            style={{ background: "var(--brand-grad)" }}>
+            {loading ? "Creating..." : `Create ${valid.length} Users`}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

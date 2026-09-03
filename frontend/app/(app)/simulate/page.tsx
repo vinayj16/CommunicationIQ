@@ -308,7 +308,7 @@ function ProfileCard({ profile, consented, starting, onStart }: {
             onClick={onStart}
             title={items === 0 ? "No questions configured" : consented ? "" : "Consent is required before recording"}
           >
-            {starting ? "Starting…" : "Start"}
+            {starting ? "Starting…" : <>Start <span aria-hidden>→</span></>}
           </button>
         </div>
       }

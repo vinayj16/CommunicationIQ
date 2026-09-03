@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from beanie.operators import In
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
 
 from app import formats, skills
 from app import deadline as app_deadline
@@ -198,6 +199,67 @@ async def home(principal: Principal, models: TenantModels) -> StudentHome:
     # The Gap Meter reads mastery only — never XP (GAM-23).
     gap_percent = round(100 * sum(m.mastery for m in mastery) / len(mastery), 1) if mastery else None
 
+    # Load current plan for the student's tenant
+    current_plan_data = None
+    plan_expires = None
+    tenant_slug = ""
+    try:
+        from app.models.platform import Plan, Tenant as TenantModel
+        from app.db import control_db
+        _db = control_db()
+        tenant_doc = await _db.tenants.find_one({"_id": user.tenant_id}) if user.tenant_id else None
+        if tenant_doc:
+            tenant_slug = tenant_doc.get("slug", "")
+            if tenant_doc.get("plan_id"):
+                plan_doc = await _db.plans.find_one({"_id": tenant_doc["plan_id"]})
+                if plan_doc:
+                    current_plan_data = {
+                        "id": str(plan_doc["_id"]),
+                        "name": plan_doc.get("name", ""),
+                        "features": plan_doc.get("features", []),
+                        "max_questions": plan_doc.get("max_questions", 500),
+                        "max_exams_per_day": plan_doc.get("max_exams_per_day", 10),
+                        "has_proctoring": plan_doc.get("has_proctoring", True),
+                    }
+                    plan_expires = tenant_doc.get("plan_expires_at")
+    except Exception:
+        pass
+
+    # Load active platform exam tests for student visibility (core tests only, not company-specific)
+    exam_tests_list = []
+    try:
+        from app.models.platform import ExamTest
+        from app.db import control_db as _control_db
+        _cdb = _control_db()
+        _tests = await ExamTest.find(
+            ExamTest.is_active == True,
+            ExamTest.company == "",
+        ).to_list()
+        exam_tests_list = [
+            {
+                "id": t.id, "name": t.name, "description": t.description,
+                "slug": t.slug, "duration_minutes": t.duration_minutes,
+                "reading_questions": t.reading_questions,
+                "listening_questions": t.listening_questions,
+                "writing_questions": t.writing_questions,
+                "speaking_questions": t.speaking_questions,
+                "reading_seconds": t.reading_seconds,
+                "listening_seconds": t.listening_seconds,
+                "writing_seconds": t.writing_seconds,
+                "speaking_seconds": t.speaking_seconds,
+                "allow_pause": t.allow_pause, "show_timer": t.show_timer,
+                "one_shot_audio": t.one_shot_audio,
+                "is_baseline": t.is_baseline, "company": t.company,
+                "total_questions": (t.reading_questions + t.listening_questions
+                                     + t.writing_questions + t.speaking_questions),
+                "total_parts": sum(1 for v in [t.reading_questions, t.listening_questions,
+                   t.writing_questions, t.speaking_questions] if v > 0),
+            }
+            for t in _tests
+        ]
+    except Exception:
+        pass
+
     return StudentHome(
         user=_to_user_out(user),
         consent_given=bool(consent and consent.granted),
@@ -205,6 +267,10 @@ async def home(principal: Principal, models: TenantModels) -> StudentHome:
         total_xp=int(total_xp),
         level=_level_for(int(total_xp)),
         gap_percent=gap_percent,
+        current_plan=current_plan_data,
+        plan_expires_at=str(plan_expires) if plan_expires else None,
+        tenant_slug=tenant_slug,
+        exam_tests=exam_tests_list,
         streak=StreakOut(
             current_streak=streak.current_streak if streak else 0,
             best_streak=streak.best_streak if streak else 0,
@@ -228,6 +294,7 @@ async def home(principal: Principal, models: TenantModels) -> StudentHome:
                 is_baseline=a.is_baseline, overall_score=overall.get(a.id),
                 started_at=a.started_at, submitted_at=a.submitted_at,
                 scored_at=a.scored_at,
+                proctor_strikes=getattr(a, "proctor_strikes", 0),
             )
             for a in attempts
         ],
@@ -326,3 +393,76 @@ async def attempts(principal: Principal, models: TenantModels) -> list[AttemptOu
         )
         for a in rows
     ]
+
+
+class SubscribeRequest(BaseModel):
+    plan_id: str
+
+
+@router.get("/plans")
+async def student_list_plans() -> list[dict]:
+    """List active plans for students to browse."""
+    from app.db import control_db
+    db = control_db()
+    rows = await db["plans"].find({"is_active": True}).sort("created_at", -1).to_list(100)
+    return [
+        {
+            "id": str(r["_id"]), "name": r.get("name", ""), "slug": r.get("slug", ""),
+            "description": r.get("description", ""),
+            "price_monthly": r.get("price_monthly", 0), "price_yearly": r.get("price_yearly", 0),
+            "seat_limit": r.get("seat_limit", 50), "features": r.get("features", []),
+            "max_questions": r.get("max_questions", 500), "max_exams_per_day": r.get("max_exams_per_day", 10),
+            "has_proctoring": r.get("has_proctoring", True), "has_analytics": r.get("has_analytics", True),
+            "has_custom_branding": r.get("has_custom_branding", False), "has_api_access": r.get("has_api_access", False),
+            "is_active": r.get("is_active", True), "is_default": r.get("is_default", False),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/subscribe")
+async def subscribe_to_plan(body: SubscribeRequest, principal: Principal) -> dict:
+    """Subscribe to a plan (general users only)."""
+    from app.db import control_db
+    from app.models.platform import Tenant, Plan
+    from datetime import datetime, timezone
+    
+    db = control_db()
+    tenant_doc = await db.tenants.find_one({"_id": principal.tenant_id}) if principal.tenant_id else None
+    
+    if not tenant_doc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No tenant associated with your account")
+    
+    # Only general users can subscribe via this endpoint
+    if tenant_doc.get("slug") != "general":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Institutional users do not need to subscribe")
+    
+    # Verify the plan exists and is active
+    plan_doc = await db.plans.find_one({"_id": body.plan_id})
+    if not plan_doc or not plan_doc.get("is_active", True):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found or inactive")
+    
+    # For paid plans, check if payment gateway is configured
+    if plan_doc.get("price_monthly", 0) > 0:
+        payment_config = await db.payment_configs.find_one({"is_active": True})
+        if not payment_config:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Payment is not yet configured. Please contact your administrator."
+            )
+    
+    # Update the tenant's plan
+    expires = None
+    if plan_doc.get("price_monthly", 0) > 0:
+        # Paid plan: expires in 30 days from now
+        from datetime import timedelta
+        expires = datetime.now(timezone.utc) + timedelta(days=30)
+    await db.tenants.update_one(
+        {"_id": tenant_doc["_id"]},
+        {"$set": {
+            "plan_id": body.plan_id,
+            "plan_expires_at": expires,
+        }}
+    )
+    
+    return {"ok": True, "plan": plan_doc.get("name", "")}

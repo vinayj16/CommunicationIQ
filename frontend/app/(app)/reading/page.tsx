@@ -16,8 +16,10 @@ import { FullscreenGuard } from "@/components/FullscreenGuard";
 import { LevelSelect, type DifficultyLevel } from "@/components/LevelSelect";
 import { useProctoring } from "@/lib/proctoring";
 import { CameraPreview } from "@/components/proctoring/CameraPreview";
+import { ReviewCard } from "@/components/ReviewCard";
 import { ExamSidebar, type ExamQuestionStatus } from "@/components/ExamSidebar";
 import { markAttempted } from "@/lib/setTracker";
+import { setExamMode } from "@/lib/examMode";
 
 export default function ReadingPage() {
   return (
@@ -70,6 +72,7 @@ function Reading() {
       setCurrentQuestionIndex(0);
       setAnswerSeconds(0);
       openedAt.current = Date.now();
+      setExamMode(true);
       setStage("read");
     } catch (err) {
       setProblem(err instanceof ApiError ? err.detail : "No reading passages with questions available yet. Please try again later.");
@@ -107,8 +110,8 @@ function Reading() {
         read_ms: readMs.current,
       }));
       toast("success", "Answers submitted successfully");
-      // Disconnect camera and mic when practice ends
       proctoring.stopCamera();
+      setExamMode(false);
       setStage("marked");
     } catch (err) {
       const msg = err instanceof ApiError ? err.detail : "Could not submit";
@@ -157,6 +160,12 @@ function Reading() {
   if (stage === "read" && session) {
     return (
       <FullscreenGuard>
+        <CameraPreview
+          videoRef={proctoring.videoRef}
+          faceCount={proctoring.state.faceCount}
+          strikes={proctoring.state.strikes}
+          isFocused={proctoring.state.isFocused}
+        />
         <PageHeader
           title={session.title}
           sub={`${KIND_LABEL[session.kind] ?? session.kind} · ${session.word_count} words · ${session.question_count} questions afterwards`}
@@ -222,7 +231,6 @@ function Reading() {
         timeRemaining={`${remainingMinutes}:${String(remainingSecs).padStart(2, "0")}`}
         totalSecondsRemaining={remainingSeconds}
         onNavigate={navigateForward}
-        collapsed={true}
         onEndExam={() => {
           if (confirm("Are you sure you want to end this practice?")) {
             void submit();
@@ -383,31 +391,7 @@ function Reading() {
         </div>
 
         {/* Review & Rating Card */}
-        <div className="ds-card p-5 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-sm font-bold">Rate this practice</div>
-            <div className="flex gap-1">
-              {[1, 2, 3, 4, 5].map((star) => (
-                <button key={star} className="text-lg" style={{ color: "var(--rag-amber)" }}>
-                  ★
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="text-xs text-muted leading-relaxed mb-3">
-            How was this practice session? Your rating helps improve question quality.
-          </div>
-          <div className="flex items-center gap-3">
-            <button onClick={() => autoStart()}
-                    className="btn btn-primary btn-sm ds-focus flex-1">
-              Next set →
-            </button>
-            <button onClick={() => { proctoring.stopCamera(); setStage("intro"); }}
-                    className="btn btn-ghost btn-sm ds-focus">
-              Back to practice
-            </button>
-          </div>
-        </div>
+        <ReviewCard attemptId={session?.attempt_id} label="reading" onNext={autoStart} onBack={() => { proctoring.stopCamera(); setStage("intro"); }} nextLabel="Next set →" />
 
         <Section title="Every question, with the reasoning" className="mb-4">
           <div className="space-y-2">

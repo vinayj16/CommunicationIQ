@@ -44,6 +44,7 @@ class SessionUser(BaseModel):
     tenant_primary_color: str | None = None
     must_change_password: bool = False
     preferred_theme: str = ""
+    avatar_url: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -161,6 +162,7 @@ class AttemptOut(BaseModel):
     submitted_at: datetime | None
     scored_at: datetime | None
     ip_address: str = ""
+    proctor_strikes: int = 0
 
 
 class MasteryOut(BaseModel):
@@ -209,6 +211,13 @@ class StudentHome(BaseModel):
     assigned_profiles: list[SimulationProfileOut] = []
     recent_attempts: list[AttemptOut] = []
     mastery: list[MasteryOut] = []
+    # Plan info
+    current_plan: dict | None = None
+    plan_expires_at: str | None = None
+    # Tenant info for subscription gating
+    tenant_slug: str = ""
+    # Platform exam tests visible to students
+    exam_tests: list[dict] = []
 
 
 class ConsentRequest(BaseModel):
@@ -372,6 +381,7 @@ class AuditOut(BaseModel):
     action: str
     entity: str
     entity_id: str
+    ip_address: str = ""
     at: datetime
 
 
@@ -1022,6 +1032,9 @@ class AttemptResult(BaseModel):
     ip_address: str = ""
     started_at: datetime | None = None
     submitted_at: datetime | None = None
+    # Proctoring data
+    proctor_events: list[dict] = []
+    proctor_strikes: int = 0
     # The frozen engine's weakest-composite-dimension figure. Retained as
     # engine output (SCORING_PATH); NOT a diagnosis surface -- the page does
     # not render it, and narration is not given it. See primary_diagnosis.
@@ -1795,6 +1808,7 @@ class TenantCreateRequest(BaseModel):
     status: str = "trial"
     admin_email: EmailStr
     admin_name: str
+    admin_password: str = ""
     branding: TenantBranding | None = None
     profile: TenantProfile | None = None
     region: str = ""
@@ -1860,4 +1874,67 @@ class ReviewOut(BaseModel):
     rating: int
     difficulty: str
     comment: str
+    created_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------
+# Contact Messages
+# --------------------------------------------------------------------------
+
+class ContactMessageRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=5000)
+    priority: str = "normal"
+
+
+class ContactMessageReplyRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+# --------------------------------------------------------------------------
+# Exam Tests
+# --------------------------------------------------------------------------
+
+class ExamTestRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    duration_minutes: int = Field(default=30, ge=5, le=300)
+    reading_questions: int = Field(default=10, ge=0, le=50)
+    listening_questions: int = Field(default=10, ge=0, le=50)
+    writing_questions: int = Field(default=10, ge=0, le=50)
+    speaking_questions: int = Field(default=0, ge=0, le=50)
+    reading_seconds: int = Field(default=600, ge=60)
+    listening_seconds: int = Field(default=600, ge=60)
+    writing_seconds: int = Field(default=600, ge=60)
+    speaking_seconds: int = Field(default=0, ge=0)
+    allow_pause: bool = False
+    show_timer: bool = True
+    one_shot_audio: bool = True
+    is_active: bool = True
+    is_baseline: bool = False
+    company: str = ""
+    question_ids: dict = Field(default_factory=dict)
+
+
+class ExamTestOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    slug: str
+    duration_minutes: int
+    reading_questions: int
+    listening_questions: int
+    writing_questions: int
+    speaking_questions: int
+    reading_seconds: int
+    listening_seconds: int
+    writing_seconds: int
+    speaking_seconds: int
+    allow_pause: bool
+    show_timer: bool
+    one_shot_audio: bool
+    is_active: bool
+    is_baseline: bool
+    company: str
+    question_ids: dict
     created_at: datetime | None = None

@@ -59,6 +59,7 @@ function Tests() {
   const baseline = profiles.filter((p) => p.is_baseline);
   const company = profiles.filter((p) => !p.is_baseline && p.company);
   const formats = profiles.filter((p) => !p.is_baseline && !p.company);
+  const profileNames = new Set(profiles.map((p) => p.name));
 
   async function start(profileId: string) {
     setStarting(profileId);
@@ -190,9 +191,11 @@ function Tests() {
           </p>
           {(() => {
             const companyNames = Array.from(new Set(company.map((p) => p.company))).sort();
-            const filteredCompany = companyFilter
+
+            const filteredProfiles = companyFilter
               ? company.filter((p) => p.company === companyFilter)
               : company;
+
             return (
               <>
                 {companyNames.length > 1 && (
@@ -210,7 +213,7 @@ function Tests() {
                   </div>
                 )}
                 <div className="grid md:grid-cols-2 gap-3">
-                  {filteredCompany.map((p) => (
+                  {filteredProfiles.map((p) => (
                     <TestCard key={p.id} profile={p} consented={consented}
                               starting={starting === p.id} anyStarting={starting !== ""}
                               inProgressAttemptId={inProgressByProfile.get(p.id)}
@@ -312,10 +315,12 @@ function TestCard({ profile: p, first, consented, starting, anyStarting, inProgr
             onClick={onStart}
             title={items === 0 ? "No questions configured" : consented ? "" : "Consent is required before recording"}
           >
-            {starting ? "Starting…" : "Start"}
+            {starting ? "Starting…" : <>Start <span aria-hidden>→</span></>}
           </button>
         </div>
       </div>
     </div>
   );
 }
+
+

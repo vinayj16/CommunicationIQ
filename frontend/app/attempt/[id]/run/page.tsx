@@ -192,7 +192,11 @@ function Runner() {
         try {
           setPhase("submitting");
           proctoring.stopCamera();
-          await attemptApi.submit(id);
+          const proctorSummary = proctoring.summary();
+          await attemptApi.submit(id, {
+            proctor_events: proctorSummary.events,
+            proctor_strikes: proctorSummary.strikes,
+          });
           router.replace(`/results/${id}`);
         } catch { /* ignore - already showing error */ }
       }, 1500);
@@ -359,7 +363,11 @@ function Runner() {
     recorder.current?.close();
     recorder.current = null;
     try {
-      await attemptApi.submit(id);
+      const proctorSummary = proctoring.summary();
+      await attemptApi.submit(id, {
+        proctor_events: proctorSummary.events,
+        proctor_strikes: proctorSummary.strikes,
+      });
       router.replace(`/results/${id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Scoring failed.");
@@ -966,7 +974,11 @@ function Runner() {
     recorder.current = null;
     proctoring.stopCamera();
     try {
-      await attemptApi.submit(id);
+      const proctorSummary = proctoring.summary();
+      await attemptApi.submit(id, {
+        proctor_events: proctorSummary.events,
+        proctor_strikes: proctorSummary.strikes,
+      });
       router.replace(`/results/${id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Scoring failed.");
@@ -979,6 +991,17 @@ function Runner() {
       void finishAnyway();
     }
   }
+
+  // Build question statuses for the sidebar — must be before any early returns
+  const questionStatuses: ExamQuestionStatus[] = useMemo(() =>
+    payload ? payload.items.map((it, i) => ({
+      id: it.response_id,
+      index: i + 1,
+      answered: i < index,
+      selectedOption: null,
+    })) : [],
+    [payload, index]
+  );
 
   // -- rendering ----------------------------------------------------------
 
@@ -1044,17 +1067,6 @@ function Runner() {
       </Centered>
     );
   }
-
-  // Build question statuses for the sidebar — must be before any early returns
-  const questionStatuses: ExamQuestionStatus[] = useMemo(() =>
-    payload ? payload.items.map((it, i) => ({
-      id: it.response_id,
-      index: i + 1,
-      answered: i < index,
-      selectedOption: null,
-    })) : [],
-    [payload, index]
-  );
 
   if (!item || !payload) return null;
 
